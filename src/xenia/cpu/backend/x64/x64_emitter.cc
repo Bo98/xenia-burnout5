@@ -421,7 +421,7 @@ uint64_t TrapDebugPrint(void* raw_context, uint64_t address) {
   XELOGD("(DebugPrint) {}", string_tmp);
 
   if (cvars::debugprint_trap_log) {
-    debugging::DebugPrint("(DebugPrint) {}", string_tmp);
+    debugging::DebugPrint("{}", string_tmp);
   }
 
   delete[] string_tmp;
