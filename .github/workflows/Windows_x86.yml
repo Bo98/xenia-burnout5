@@ -69,19 +69,19 @@ jobs:
       - name: Prepare artifacts
         id: prepare_artifacts
         run: |-
-          if ((Get-Item "build\bin\Windows\Release\xenia_canary.exe").Length -le 100000) {
+          if ((Get-Item "build\bin\Windows\Release\xenia_burnout5.exe").Length -le 100000) {
             echo "::error:: Executable is too small."
             exit 1
           }
-          $path="xenia_canary_windows.7z"
-          7z a $path .\build\bin\Windows\Release\xenia_canary.exe LICENSE -mx9 -bb3
+          $path="xenia_burnout5_windows.7z"
+          7z a $path .\build\bin\Windows\Release\xenia_burnout5.exe LICENSE -mx9 -bb3
           if ((Get-Item "$path").Length -le 100000) {
             echo "::error:: Archive is too small."
             exit 1
           }
           echo "path=$path" >> $env:GITHUB_OUTPUT
 
-      - name: Upload Xenia Canary artifact
+      - name: Upload Xenia Burnout5 artifact
         if: ${{ steps.prepare_artifacts.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:

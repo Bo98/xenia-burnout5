@@ -97,7 +97,7 @@ jobs:
       - name: Prepare AppImage
         id: prepare_artifacts
         run: |-
-          binary=build/bin/Linux/Release/xenia_canary
+          binary=build/bin/Linux/Release/xenia_burnout5
           if [ $(stat -c%s $binary) -le 100000 ]; then
             echo "::error::Binary is too small."
             exit 1
@@ -105,12 +105,12 @@ jobs:
           chmod +x $binary
 
           # Set up AppDir structure
-          APPDIR=artifacts/xenia_canary
+          APPDIR=artifacts/xenia_burnout5
           mkdir -p ${APPDIR}/usr/bin
           # Install icons
           for size in 16 32 48 64 128 256 512 1024; do
             mkdir -p ${APPDIR}/usr/share/icons/hicolor/${size}x${size}/apps
-            cp assets/icon/${size}.png ${APPDIR}/usr/share/icons/hicolor/${size}x${size}/apps/xenia_canary.png
+            cp assets/icon/${size}.png ${APPDIR}/usr/share/icons/hicolor/${size}x${size}/apps/xenia_burnout5.png
           done
 
           # Copy any extra runtime data directories alongside the binary
@@ -119,7 +119,7 @@ jobs:
           # Build AppImage with linuxdeploy (requires absolute paths)
           linuxdeploy --appdir $APPDIR \
             --executable $binary \
-            --desktop-file ${GITHUB_WORKSPACE}/assets/xenia_canary.desktop \
+            --desktop-file ${GITHUB_WORKSPACE}/assets/xenia_burnout5.desktop \
             --icon-file ${GITHUB_WORKSPACE}/assets/icon/256.png \
             --output appimage
 
@@ -131,11 +131,11 @@ jobs:
           fi
 
           chmod +x "$appimage_file"
-          artifact=xenia_canary_linux.AppImage
+          artifact=xenia_burnout5_linux.AppImage
           mv "$appimage_file" $artifact
           echo "path=$artifact" >> $GITHUB_OUTPUT
 
-      - name: Upload Xenia Canary artifact
+      - name: Upload Xenia Burnout5 artifact
         if: ${{ steps.prepare_artifacts.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
