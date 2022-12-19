@@ -296,6 +296,12 @@ bool Memory::Initialize() {
   memcpy(TranslateVirtual(0x80000000 + 0x1C), &value_to_write,
          sizeof(uint32_t));
 
+  // PRV register (hack?)
+  heaps_.v80000000.AllocFixed(
+      0x8FFF0000, 0x10000, 0x10000,
+      kMemoryAllocationReserve | kMemoryAllocationCommit,
+      kMemoryProtectRead | kMemoryProtectWrite);
+
   return true;
 }
 
