@@ -48,6 +48,13 @@ DEFINE_bool(kernel_report_hi_definition, true,
     "is set to 1024x768 or lower.", 
     "Kernel");
 
+DEFINE_int32(
+    video_standard, 1,
+    "Enables switching between different video signals.\n   1=NTSC\n   "
+    "2=NTSC-J\n   3=PAL\n",
+    "Video");
+
+DEFINE_bool(use_50Hz_mode, false, "Enables usage of PAL-50 mode.", "Video");
 // BT.709 on modern monitors and TVs looks the closest to the Xbox 360 connected
 // to an HDTV.
 DEFINE_uint32(kernel_display_gamma_type, 2,
@@ -73,6 +80,18 @@ std::pair<uint16_t, uint16_t> GetInternalDisplayResolution() {
   }
   return internal_display_resolution_entries
       [cvars::internal_display_resolution];
+}
+
+inline constexpr static uint32_t GetVideoStandard() {
+  if (cvars::video_standard < 1 || cvars::video_standard > 3) {
+    return 1;
+  }
+
+  return cvars::video_standard;
+}
+
+inline constexpr static float GetVideoRefreshRate() {
+  return cvars::use_50Hz_mode ? 50.0f : 60.0f;
 }
 
 namespace xe {
@@ -187,8 +206,8 @@ void VdQueryVideoMode(X_VIDEO_MODE* video_mode) {
   video_mode->is_widescreen =
       ((video_mode->display_width / 4) > (video_mode->display_height / 3));
   video_mode->is_hi_def = cvars::kernel_report_hi_definition;
-  video_mode->refresh_rate = 60.0f;
-  video_mode->video_standard = 1;  // NTSC
+  video_mode->refresh_rate = GetVideoRefreshRate();
+  video_mode->video_standard = GetVideoStandard();
   video_mode->unknown_0x8a = 0x4A;
   video_mode->unknown_0x01 = 0x01;
 }
