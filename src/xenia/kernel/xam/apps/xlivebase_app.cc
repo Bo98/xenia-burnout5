@@ -55,6 +55,21 @@ XLiveBaseApp::XLiveBaseApp(KernelState* kernel_state)
 X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message, uint32_t arg1,
                                             uint32_t arg2) {
   switch (message) {
+    case 0x0005008C: {
+      // Called on startup of blades dashboard v1888 to v2858
+      XELOGD("XLiveBaseUnk5008C, unimplemented");
+      return X_E_FAIL;
+    }
+    case 0x00050094: {
+      // Called on startup of blades dashboard v4532 to v4552
+      XELOGD("XLiveBaseUnk50094, unimplemented");
+      return X_E_FAIL;
+    }
+    case 0x00058003: {
+      // Called on startup of dashboard (netplay build)
+      XELOGD("XLiveBaseLogonGetHR, unimplemented");
+      return X_E_SUCCESS;
+    }
     case 0x00058004: {
       // Called on startup, seems to just return a bool in the buffer.
       assert_true(!arg2 || arg2 == 4);
