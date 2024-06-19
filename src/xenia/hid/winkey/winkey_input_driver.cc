@@ -32,6 +32,9 @@ DEFINE_int32(keyboard_passthru_user_index, -1,
              "Disabled (Keyboard is in "
              "gamepad mode), [0, 3] - Keyboard is assigned as VK for that user",
              "HID");
+DEFINE_int32(keyboard_user_index, 0, "If passthrough is disabled, this is the "
+                                      "controller port that keyboard emulates.",
+             "HID.WinKey");
 
 namespace xe {
 namespace hid {
@@ -113,7 +116,7 @@ X_STATUS WinKeyInputDriver::Setup() { return X_STATUS_SUCCESS; }
 
 X_RESULT WinKeyInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
                                             X_INPUT_CAPABILITIES* out_caps) {
-  if (!IsPassThruForUserEnabled(user_index)) {
+  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -135,7 +138,7 @@ X_RESULT WinKeyInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
 
 X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
                                      X_INPUT_STATE* out_state) {
-  if (!IsPassThruForUserEnabled(user_index)) {
+  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -250,7 +253,7 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
 
 X_RESULT WinKeyInputDriver::SetState(uint32_t user_index,
                                      X_INPUT_VIBRATION* vibration) {
-  if (!IsPassThruForUserEnabled(user_index)) {
+  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -259,7 +262,7 @@ X_RESULT WinKeyInputDriver::SetState(uint32_t user_index,
 
 X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
                                          X_INPUT_KEYSTROKE* out_keystroke) {
-  if (!IsPassThruForUserEnabled(user_index)) {
+  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
