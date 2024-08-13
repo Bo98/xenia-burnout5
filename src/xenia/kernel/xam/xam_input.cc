@@ -25,6 +25,15 @@ using xe::hid::X_INPUT_KEYSTROKE;
 using xe::hid::X_INPUT_STATE;
 using xe::hid::X_INPUT_VIBRATION;
 
+dword_result_t XAutomationpUnbindController_entry(dword_t user_index) {
+  if (user_index > 4) {
+    return 0;
+  }
+
+  return 1;
+}
+DECLARE_XAM_EXPORT1(XAutomationpUnbindController, kInput, kStub);
+
 void XamResetInactivity_entry() {
   // Do we need to do anything?
 }
