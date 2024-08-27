@@ -44,6 +44,8 @@ class InputSystem {
   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
                         X_INPUT_KEYSTROKE* out_keystroke);
 
+  bool GetVibrationCvar();
+
   void ToggleVibration();
   void UpdateUsedSlot(uint8_t slot, bool connected);
   uint8_t GetConnectedSlots() const { return connected_slot; }
