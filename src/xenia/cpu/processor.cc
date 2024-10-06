@@ -711,7 +711,7 @@ bool Processor::OnThreadBreakpointHit(Exception* ex) {
     debug_listener_->OnExecutionPaused();
   }
 
-  thread_info->thread->thread()->Suspend();
+  ResumeAllThreads();
 
   // Apply thread context changes.
   // TODO(benvanik): apply to all threads?
@@ -722,6 +722,8 @@ bool Processor::OnThreadBreakpointHit(Exception* ex) {
 #else
 #error Instruction pointer not specified for the target CPU architecture.
 #endif  // XE_ARCH
+
+  thread_info->thread->thread()->Suspend();
 
   // Resume execution.
   return true;
