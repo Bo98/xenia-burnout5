@@ -1233,7 +1233,7 @@ void DebugWindow::DrawBreakpointsPane() {
     int ci = 0;
     ImGui::Combo("##kernel_categories", &ci, its, 1, 1);
     ImGui::Dummy(ImVec2(0, 3));
-    ImGui::ListBoxHeader("##kernel_calls", 1000, 15);
+    ImGui::BeginListBox("##kernel_calls", ImVec2(1000, 15));
     auto& all_exports = emulator_->export_resolver()->all_exports_by_name();
     auto call_rankings = xe::fuzzy_filter(state.kernel_call_filter, all_exports,
                                           offsetof(cpu::Export, name));
@@ -1286,7 +1286,7 @@ void DebugWindow::DrawBreakpointsPane() {
       ImGui::Dummy(ImVec2(0, 1));
       ImGui::PopID();
     }
-    ImGui::ListBoxFooter();
+    ImGui::EndListBox();
     ImGui::Dummy(ImVec2(0, 3));
     if (kernel_popup_render_count == 2) {
       ImGui::SetKeyboardFocusHere();
@@ -1331,8 +1331,8 @@ void DebugWindow::DrawBreakpointsPane() {
   ImGui::Separator();
 
   ImGui::PushItemWidth(-1);
-  if (ImGui::ListBoxHeader("##empty",
-                           ImVec2(-1, ImGui::GetContentRegionAvail().y))) {
+  if (ImGui::BeginListBox("##empty",
+                          ImVec2(-1, ImGui::GetContentRegionAvail().y))) {
     std::vector<Breakpoint*> to_delete;
     for (auto& breakpoint : state.all_breakpoints) {
       ImGui::PushID(breakpoint.get());
@@ -1369,7 +1369,7 @@ void DebugWindow::DrawBreakpointsPane() {
       }
       ImGui::PopID();
     }
-    ImGui::ListBoxFooter();
+    ImGui::EndListBox();
     if (!to_delete.empty()) {
       for (auto breakpoint : to_delete) {
         DeleteCodeBreakpoint(breakpoint);
