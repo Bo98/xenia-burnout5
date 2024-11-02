@@ -820,9 +820,8 @@ bool StfsContainerDevice::ResolveFromFolder(const std::filesystem::path& path) {
   // Scan through folders until a file with magic is found
   std::queue<filesystem::FileInfo> queue;
 
-  filesystem::FileInfo folder;
-  filesystem::GetInfo(host_path_, &folder);
-  queue.push(folder);
+  std::optional<filesystem::FileInfo> folder = filesystem::GetInfo(host_path_);
+  queue.push(folder.value());
 
   while (!queue.empty()) {
     auto current_file = queue.front();
