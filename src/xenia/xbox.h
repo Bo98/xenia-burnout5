@@ -445,6 +445,90 @@ enum class XContentType : uint32_t {
   kCommunityGame = 0x02000000,
 };
 
+const static std::map<XContentType, std::string> XContentTypeMap = {
+    {XContentType::kSavedGame, "Saved Game"},
+    {XContentType::kMarketplaceContent, "Marketplace Content"},
+    {XContentType::kPublisher, "Publisher"},
+    {XContentType::kXbox360Title, "Xbox 360 Title"},
+    {XContentType::kIptvPauseBuffer, "IPTV Pause Buffer"},
+    {XContentType::kXNACommunity, "XNA Community"},
+    {XContentType::kInstalledGame, "Installed Game"},
+    {XContentType::kXboxTitle, "Xbox Title"},
+    {XContentType::kSocialTitle, "Social Title"},
+    {XContentType::kGamesOnDemand, "Game on Demand"},
+    {XContentType::kSUStoragePack, "SU Storage Pack"},
+    {XContentType::kAvatarItem, "Avatar Item"},
+    {XContentType::kProfile, "Profile"},
+    {XContentType::kGamerPicture, "Gamer Picture"},
+    {XContentType::kTheme, "Theme"},
+    {XContentType::kCacheFile, "Cache File"},
+    {XContentType::kStorageDownload, "Storage Download"},
+    {XContentType::kXboxSavedGame, "Xbox Saved Game"},
+    {XContentType::kXboxDownload, "Xbox Download"},
+    {XContentType::kGameDemo, "Game Demo"},
+    {XContentType::kVideo, "Video"},
+    {XContentType::kGameTitle, "Game Title"},
+    {XContentType::kInstaller, "Installer"},
+    {XContentType::kGameTrailer, "Game Trailer"},
+    {XContentType::kArcadeTitle, "Arcade Title"},
+    {XContentType::kXNA, "XNA"},
+    {XContentType::kLicenseStore, "License Store"},
+    {XContentType::kMovie, "Movie"},
+    {XContentType::kTV, "TV"},
+    {XContentType::kMusicVideo, "Music Video"},
+    {XContentType::kGameVideo, "Game Video"},
+    {XContentType::kPodcastVideo, "Podcast Video"},
+    {XContentType::kViralVideo, "Viral Video"},
+    {XContentType::kCommunityGame, "Community Game"},
+};
+
+enum X_MARKETPLACE_ENTRYPOINT : uint32_t {
+  ContentList = 0,
+  ContentItem = 1,
+  MembershipList = 2,
+  MembershipItem = 3,
+  ContentList_Background = 4,
+  ContentItem_Background = 5,
+  ForcedNameChangeV1 = 6,
+  ForcedNameChangeV2 = 8,
+  ProfileNameChange = 9,
+  ActiveDownloads = 12
+};
+
+enum class XDeploymentType : uint32_t {
+  kOpticalDisc = 0,
+  kHardDrive = 1,  // Like extracted?
+  kGoD = 2,
+  kUnknown = 0xFF,
+};
+
+#pragma pack(push, 4)
+struct X_XAMACCOUNTINFO {
+  enum AccountReservedFlags {
+    kPasswordProtected = 0x10000000,
+    kLiveEnabled = 0x20000000,
+    kRecovering = 0x40000000,
+    kVersionMask = 0x000000FF
+  };
+
+  enum AccountUserFlags {
+    kPaymentInstrumentCreditCard = 1,
+
+    kCountryMask = 0xFF00,
+    kSubscriptionTierMask = 0xF00000,
+    kLanguageMask = 0x3E000000,
+
+    kParentalControlEnabled = 0x1000000,
+  };
+
+  enum AccountSubscriptionTier {
+    kSubscriptionTierNone = 0,
+    kSubscriptionTierSilver = 3,
+    kSubscriptionTierGold = 6,
+    kSubscriptionTierFamilyGold = 9
+  };
+
+  enum AccountLiveFlags { kAcctRequiresManagement = 1 };
 constexpr uint32_t XINPUT_FLAG_GAMEPAD = 0x01;
 constexpr uint32_t XINPUT_FLAG_KEYBOARD = 0x02;
 constexpr uint32_t XINPUT_FLAG_MIC = 0x20;  // Based on "karaoke" titles
