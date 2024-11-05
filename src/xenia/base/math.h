@@ -319,7 +319,14 @@ inline T log2_ceil(T v) {
 
 template <typename T>
 inline T rotate_left(T v, uint8_t sh) {
-  return (T(v) << sh) | (T(v) >> ((sizeof(T) * 8) - sh));
+  return (T(v) << sh) | (T(v) >> ((sizeof(T) * CHAR_BIT) - sh));
+}
+template <typename T>
+inline T rotate_right(T v, uint8_t sh) {
+  constexpr unsigned char SHIFT_MASK = (CHAR_BIT * sizeof(T)) - 1;
+  uint8_t rshr = sh & SHIFT_MASK;
+  uint8_t lshl = static_cast<uint8_t>(-static_cast<int8_t>(sh)) & SHIFT_MASK;
+  return (v >> rshr) | (v << lshl);
 }
 #if XE_PLATFORM_WIN32
 template <>
