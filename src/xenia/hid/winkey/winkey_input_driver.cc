@@ -41,6 +41,9 @@ namespace hid {
 namespace winkey {
 
 bool static IsPassThruForUserEnabled(uint32_t user_index) {
+  if (cvars::keyboard_passthru_user_index == -1) {
+    return false;
+  }
   return user_index == cvars::keyboard_passthru_user_index;
 }
 
@@ -138,7 +141,8 @@ X_RESULT WinKeyInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
 
 X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
                                      X_INPUT_STATE* out_state) {
-  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
+  if (!IsPassThruForUserEnabled(user_index) &&
+      user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -253,7 +257,8 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
 
 X_RESULT WinKeyInputDriver::SetState(uint32_t user_index,
                                      X_INPUT_VIBRATION* vibration) {
-  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
+  if (!IsPassThruForUserEnabled(user_index) &&
+      user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -262,7 +267,8 @@ X_RESULT WinKeyInputDriver::SetState(uint32_t user_index,
 
 X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
                                          X_INPUT_KEYSTROKE* out_keystroke) {
-  if (!IsPassThruForUserEnabled(user_index) && user_index != cvars::keyboard_user_index) {
+  if (!IsPassThruForUserEnabled(user_index) &&
+      user_index != cvars::keyboard_user_index) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -289,14 +295,29 @@ X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
     key_events_.pop();
   }
 
+  bool capital = IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
+
   if (!IsPassThruForUserEnabled(user_index)) {
-    bool capital = IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
     for (const KeyBinding& b : key_bindings_) {
       if (b.input_key == evt.virtual_key &&
           ((b.lowercase == b.uppercase) || (b.lowercase && !capital) ||
            (b.uppercase && capital))) {
         xinput_virtual_key = b.output_key;
       }
+    }
+  } else {
+    xinput_virtual_key = evt.virtual_key;
+
+    if (capital) {
+      keystroke_flags |= 0x0008;  // XINPUT_KEYSTROKE_SHIFT
+    }
+
+    if (IsKeyToggled(VK_CONTROL)) {
+      keystroke_flags |= 0x0010;  // XINPUT_KEYSTROKE_CTRL
+    }
+
+    if (IsKeyToggled(VK_MENU)) {
+      keystroke_flags |= 0x0020;  // XINPUT_KEYSTROKE_ALT
     }
   }
 
@@ -315,10 +336,13 @@ X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
     }
 
     if (IsPassThruForUserEnabled(user_index)) {
-      WCHAR buf;
-      if (ToUnicode(uint8_t(xinput_virtual_key), 0, key_map_, &buf, 1, 0) ==
-          1) {
-        unicode = buf;
+      if (GetKeyboardState(key_map_)) {
+        WCHAR buf;
+        if (ToUnicode(uint8_t(xinput_virtual_key), 0, key_map_, &buf, 1, 0) ==
+            1) {
+          keystroke_flags |= 0x1000;  // XINPUT_KEYSTROKE_VALIDUNICODE
+          unicode = buf;
+        }
       }
     }
 
