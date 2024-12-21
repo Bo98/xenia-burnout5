@@ -28,9 +28,11 @@ void InputSystem::AddDriver(std::unique_ptr<InputDriver> driver) {
   drivers_.push_back(std::move(driver));
 }
 
-void InputSystem::UpdateUsedSlot(uint8_t slot, bool connected) {
+void InputSystem::UpdateUsedSlot(InputDriver* driver, uint8_t slot,
+                                 bool connected) {
   if (slot == 0xFF) {
-    slot = 0;
+    XELOGW("{} received requrest for slot any! Unsupported", __func__);
+    return;
   }
 
   if (connected) {
@@ -120,16 +122,20 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
 
   bool any_connected = false;
   for (auto& driver : drivers_) {
+    // connected_slots
     X_RESULT result = driver->GetKeystroke(user_index, flags, out_keystroke);
-    if (result == X_ERROR_INVALID_PARAMETER) {
+    if (result == X_ERROR_INVALID_PARAMETER ||
+        result == X_ERROR_DEVICE_NOT_CONNECTED) {
       continue;
     }
 
     if (result != X_ERROR_DEVICE_NOT_CONNECTED) {
-      any_connected = true;
-    }
+    any_connected = true;
+
     if (result == X_ERROR_SUCCESS || result == X_ERROR_EMPTY) {
-      UpdateUsedSlot(user_index, any_connected);
+      if (result == X_ERROR_SUCCESS) {
+        last_used_slot = user_index;
+      }
       return result;
     }
 
@@ -137,7 +143,6 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
       continue;
     }
   }
-  UpdateUsedSlot(user_index, any_connected);
   return any_connected ? X_ERROR_EMPTY : X_ERROR_DEVICE_NOT_CONNECTED;
 }
 
