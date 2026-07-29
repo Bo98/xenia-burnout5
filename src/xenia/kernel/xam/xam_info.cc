@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include "xenia/kernel/xam/xam_info.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -380,8 +381,7 @@ void XamLoaderTerminateTitle_entry() {
 }
 DECLARE_XAM_EXPORT1(XamLoaderTerminateTitle, kNone, kSketchy);
 
-uint32_t XamAllocImpl(uint32_t flags, uint32_t size,
-                      xe::be<uint32_t>* out_ptr) {
+uint32_t xeXamAlloc(uint32_t flags, uint32_t size, xe::be<uint32_t>* out_ptr) {
   if (flags & 0x00100000) {  // HEAP_ZERO_memory used unless this flag
     // do nothing!
     // maybe we ought to fill it with nonzero garbage, but otherwise this is a
@@ -399,7 +399,7 @@ uint32_t XamAllocImpl(uint32_t flags, uint32_t size,
 }
 
 dword_result_t XamAlloc_entry(dword_t flags, dword_t size, lpdword_t out_ptr) {
-  return XamAllocImpl(flags, size, out_ptr);
+  return xeXamAlloc(flags, size, out_ptr);
 }
 DECLARE_XAM_EXPORT1(XamAlloc, kMemory, kImplemented);
 
@@ -410,7 +410,7 @@ static const unsigned short XamPhysicalProtTable[4] = {
 dword_result_t XamAllocEx_entry(dword_t phys_flags, dword_t flags, dword_t size,
                                 lpdword_t out_ptr, const ppc_context_t& ctx) {
   if ((flags & 0x40000000) == 0) {
-    return XamAllocImpl(flags, size, out_ptr);
+    return xeXamAlloc(flags, size, out_ptr);
   }
 
   uint32_t flags_remapped = phys_flags;
@@ -431,6 +431,8 @@ dword_result_t XamAllocEx_entry(dword_t phys_flags, dword_t flags, dword_t size,
   return result ? 0 : 0x8007000E;
 }
 DECLARE_XAM_EXPORT1(XamAllocEx, kMemory, kImplemented);
+
+void xeXamFree(uint32_t ptr) { kernel_state()->memory()->SystemHeapFree(ptr); }
 
 dword_result_t XamFree_entry(lpdword_t ptr) {
   kernel_state()->memory()->SystemHeapFree(ptr.guest_address());

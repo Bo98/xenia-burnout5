@@ -675,46 +675,55 @@ struct X_POOL_ALLOC_HEADER {
   xe::be<uint32_t> tag;
 };
 
-uint32_t xeAllocatePoolTypeWithTag(PPCContext* context, uint32_t size,
+uint32_t xeAllocatePoolTypeWithTag(KernelState* kernel_state, uint32_t size,
                                    uint32_t tag, uint32_t pool_selector) {
   if (size <= 0xFD8) {
     uint32_t adjusted_size = size + sizeof(X_POOL_ALLOC_HEADER);
 
-    uint32_t addr =
-        kernel_state()->memory()->SystemHeapAlloc(adjusted_size, 64);
+    uint32_t addr = kernel_state->memory()->SystemHeapAlloc(adjusted_size, 64);
+    if (!addr) {
+      return 0;
+    }
 
-    auto result_ptr = context->TranslateVirtual<X_POOL_ALLOC_HEADER*>(addr);
+    auto result_ptr =
+        kernel_state->memory()->TranslateVirtual<X_POOL_ALLOC_HEADER*>(addr);
     result_ptr->unk_2 = 170;
     result_ptr->tag = tag;
 
-    return addr + sizeof(X_POOL_ALLOC_HEADER);
+    auto result = addr + sizeof(X_POOL_ALLOC_HEADER);
+
+    // Make sure xeFreePool can detect this correctly.
+    assert_false((result & (4096 - 1)) == 0);
+
+    return result;
   } else {
-    return kernel_state()->memory()->SystemHeapAlloc(size, 4096);
+    return kernel_state->memory()->SystemHeapAlloc(size, 4096);
   }
 }
 
 dword_result_t ExAllocatePoolTypeWithTag_entry(dword_t size, dword_t tag,
                                                dword_t pool_selector,
                                                const ppc_context_t& context) {
-  return xeAllocatePoolTypeWithTag(context, size, tag, pool_selector);
+  return xeAllocatePoolTypeWithTag(context->kernel_state, size, tag,
+                                   pool_selector);
 }
 DECLARE_XBOXKRNL_EXPORT1(ExAllocatePoolTypeWithTag, kMemory, kImplemented);
 
 dword_result_t ExAllocatePoolWithTag_entry(dword_t numbytes, dword_t tag,
                                            const ppc_context_t& context) {
-  return xeAllocatePoolTypeWithTag(context, numbytes, tag, 0);
+  return xeAllocatePoolTypeWithTag(context->kernel_state, numbytes, tag, 0);
 }
 DECLARE_XBOXKRNL_EXPORT1(ExAllocatePoolWithTag, kMemory, kImplemented);
 
 dword_result_t ExAllocatePool_entry(dword_t size,
                                     const ppc_context_t& context) {
   constexpr uint32_t none = 0x656E6F4E;  // 'None'
-  return xeAllocatePoolTypeWithTag(context, size, none, 0);
+  return xeAllocatePoolTypeWithTag(context->kernel_state, size, none, 0);
 }
 DECLARE_XBOXKRNL_EXPORT1(ExAllocatePool, kMemory, kImplemented);
 
-void xeFreePool(PPCContext* context, uint32_t base_address) {
-  auto memory = context->kernel_state->memory();
+void xeFreePool(KernelState* kernel_state, uint32_t base_address) {
+  auto memory = kernel_state->memory();
   // if 4kb aligned, there is no pool header!
   if ((base_address & (4096 - 1)) == 0) {
     memory->SystemHeapFree(base_address);
@@ -724,7 +733,7 @@ void xeFreePool(PPCContext* context, uint32_t base_address) {
 }
 
 void ExFreePool_entry(lpvoid_t base_address, const ppc_context_t& context) {
-  xeFreePool(context, base_address.guest_address());
+  xeFreePool(context->kernel_state, base_address.guest_address());
 }
 DECLARE_XBOXKRNL_EXPORT1(ExFreePool, kMemory, kImplemented);
 

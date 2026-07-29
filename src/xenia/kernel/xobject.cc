@@ -53,14 +53,7 @@ XObject::~XObject() {
 
   if (allocated_guest_object_) {
     uint32_t ptr = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
-    auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(ptr);
-
-    // Free the object creation info
-    if (header->object_type_ptr) {
-      memory()->SystemHeapFree(header->object_type_ptr);
-    }
-
-    memory()->SystemHeapFree(ptr);
+    kernel_state_->FreeObject(type_, ptr);
   }
 }
 
@@ -348,9 +341,20 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
 uint8_t* XObject::CreateNative(uint32_t size) {
   auto global_lock = xe::global_critical_region::AcquireDirect();
 
+  auto object_type_ptr = kernel_state_->GetGuestObjectType(type_);
+  if (!object_type_ptr) {
+    assert_always("XObject: created a native without a registered guest type");
+    return nullptr;
+  }
+
   uint32_t total_size = size + sizeof(X_OBJECT_HEADER);
 
-  auto mem = memory()->SystemHeapAlloc(total_size);
+  auto pool_type = kernel_state_->GetCurrentPoolType();
+  auto object_type =
+      kernel_state_->memory()->TranslateVirtual<const X_OBJECT_TYPE*>(
+          object_type_ptr);
+  auto mem = kernel_state_->AllocateObject(type_, total_size,
+                                           object_type->pool_tag, pool_type);
   if (!mem) {
     // Out of memory!
     return nullptr;
@@ -361,14 +365,14 @@ uint8_t* XObject::CreateNative(uint32_t size) {
   SetNativePointer(mem + sizeof(X_OBJECT_HEADER), true);
 
   auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(mem);
-
-  auto object_type = memory()->SystemHeapAlloc(sizeof(X_OBJECT_TYPE));
-  if (object_type) {
-    // Set it up in the header.
-    // Some kernel method is accessing this struct and dereferencing a member
-    // @ offset 0x14
-    header->object_type_ptr = object_type;
-  }
+  // FIXME: Some parts of the codebase still create objects without a header so
+  // tracking this isn't easy right now.
+  header->pointer_count = 0;
+  // FIXME: We don't support this right now as many things release the handle
+  // via the object table directly.
+  header->handle_count = 0;
+  header->object_type_ptr = object_type_ptr;
+  header->flags = (pool_type == 1) ? OBJECT_HEADER_IS_TITLE_OBJECT : 0;
 
   return memory()->TranslateVirtual(guest_object_ptr_);
 }

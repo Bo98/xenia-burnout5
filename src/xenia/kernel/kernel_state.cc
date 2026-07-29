@@ -17,6 +17,7 @@
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/xam_info.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_ob.h"
@@ -1454,38 +1455,112 @@ void KernelState::SetProcessTLSVars(X_KPROCESS* process, int num_slots,
                                             << (32 - ((num_slots + 3) & 0x1C));
   }
 }
-void AllocateThread(PPCContext* context) {
-  uint32_t thread_mem_size = static_cast<uint32_t>(context->r[3]);
-  uint32_t a2 = static_cast<uint32_t>(context->r[4]);
-  uint32_t a3 = static_cast<uint32_t>(context->r[5]);
-  if (thread_mem_size <= 0xFD8) {
-    thread_mem_size += 8;
+
+uint32_t KernelState::AllocateObject(XObject::Type type, uint32_t size,
+                                     uint32_t tag, uint32_t pool_type) {
+  switch (type) {
+    case XObject::Type::Thread: {
+      if (size <= 0xFD8) {
+        size += 8;
+      }
+      uint32_t result =
+          xboxkrnl::xeAllocatePoolTypeWithTag(this, size, tag, pool_type);
+      if (result && (result & 0xFFF) != 0) {
+        result += 2;
+      }
+      return result;
+    }
+    case XObject::Type::Enumerator: {
+      xe::be<uint32_t> ptr;
+      if (!XSUCCEEDED(xam::xeXamAlloc(0, size, &ptr))) {
+        return 0;
+      }
+      return ptr;
+    }
+    default:
+      return xboxkrnl::xeAllocatePoolTypeWithTag(this, size, tag, pool_type);
   }
-  uint32_t result =
-      xboxkrnl::xeAllocatePoolTypeWithTag(context, thread_mem_size, a2, a3);
-  if (((unsigned short)result & 0xFFF) != 0) {
-    result += 2;
+}
+
+void KernelState::FreeObject(XObject::Type type, uint32_t object_ptr) {
+  switch (type) {
+    case XObject::Type::Thread:
+      if ((object_ptr & 0xFFF) != 0) {
+        object_ptr -= 2;
+      }
+      break;
+    case XObject::Type::Enumerator:
+      return xam::xeXamFree(object_ptr);
+    default:
+      break;
+  }
+  xboxkrnl::xeFreePool(this, object_ptr);
+}
+
+uint32_t KernelState::GetGuestObjectType(XObject::Type type) const {
+  auto it = host_object_type_enum_to_guest_object_type_ptr_.find(type);
+  return it == host_object_type_enum_to_guest_object_type_ptr_.end()
+             ? 0
+             : it->second;
+}
+
+XObject::Type KernelState::GetHostObjectType(uint32_t guest_object_type) const {
+  for (const auto& [host_type, guest_type] :
+       host_object_type_enum_to_guest_object_type_ptr_) {
+    if (guest_type == guest_object_type) {
+      return host_type;
+    }
+  }
+  return XObject::Type::Undefined;
+}
+
+uint32_t KernelState::GetCurrentPoolType() const {
+  if (!XThread::IsInThread()) {
+    return 2;
   }
 
-  context->r[3] = static_cast<uint64_t>(result);
+  auto ctx = XThread::GetCurrentThread()->thread_state()->context();
+  auto type = xboxkrnl::xeKeGetCurrentProcessType(ctx);
+  return (type == X_PROCTYPE_TITLE) ? 1 : 2;
+}
+
+void AllocateThread(PPCContext* context) {
+  uint32_t thread_mem_size = static_cast<uint32_t>(context->r[3]);
+  uint32_t tag = static_cast<uint32_t>(context->r[4]);
+  uint32_t pool_type = static_cast<uint32_t>(context->r[5]);
+  context->r[3] = context->kernel_state->AllocateObject(
+      XObject::Type::Thread, thread_mem_size, tag, pool_type);
 }
 void FreeThread(PPCContext* context) {
   uint32_t thread_memory = static_cast<uint32_t>(context->r[3]);
-  if ((thread_memory & 0xFFF) != 0) {
-    thread_memory -= 8;
-  }
-  xboxkrnl::xeFreePool(context, thread_memory);
+  context->kernel_state->FreeObject(XObject::Type::Thread, thread_memory);
 }
 
 void SimpleForwardAllocatePoolTypeWithTag(PPCContext* context) {
-  uint32_t a1 = static_cast<uint32_t>(context->r[3]);
-  uint32_t a2 = static_cast<uint32_t>(context->r[4]);
-  uint32_t a3 = static_cast<uint32_t>(context->r[5]);
-  context->r[3] = static_cast<uint64_t>(
-      xboxkrnl::xeAllocatePoolTypeWithTag(context, a1, a2, a3));
+  uint32_t size = static_cast<uint32_t>(context->r[3]);
+  uint32_t tag = static_cast<uint32_t>(context->r[4]);
+  uint32_t pool_type = static_cast<uint32_t>(context->r[5]);
+
+  // Undefined is fine - we only use it for special casing and we're already
+  // only here if we're not using a special allocate/free function.
+  context->r[3] = context->kernel_state->AllocateObject(
+      XObject::Type::Undefined, size, tag, pool_type);
 }
 void SimpleForwardFreePool(PPCContext* context) {
-  xboxkrnl::xeFreePool(context, static_cast<uint32_t>(context->r[3]));
+  context->kernel_state->FreeObject(XObject::Type::Undefined,
+                                    static_cast<uint32_t>(context->r[3]));
+}
+
+void AllocateEnumerator(PPCContext* context) {
+  uint32_t size = static_cast<uint32_t>(context->r[3]);
+  uint32_t tag = static_cast<uint32_t>(context->r[4]);
+  uint32_t pool_type = static_cast<uint32_t>(context->r[5]);
+  context->r[3] = context->kernel_state->AllocateObject(
+      XObject::Type::Enumerator, size, tag, pool_type);
+}
+void FreeEnumerator(PPCContext* context) {
+  uint32_t memory = static_cast<uint32_t>(context->r[3]);
+  context->kernel_state->FreeObject(XObject::Type::Enumerator, memory);
 }
 
 void DeleteMutant(PPCContext* context) {
@@ -1507,6 +1582,8 @@ void CloseFileProc(PPCContext* context) {}
 void DeleteFileProc(PPCContext* context) {}
 
 void UnknownFileProc(PPCContext* context) {}
+
+void CloseEnumeratorProc(PPCContext* context) {}
 
 void DeleteSymlink(PPCContext* context) {
   X_KSYMLINK* lnk = context->TranslateVirtualGPR<X_KSYMLINK*>(context->r[3]);
@@ -1543,7 +1620,7 @@ void KernelState::InitializeKernelGuestGlobals() {
       block->XboxKernelDefaultObject.wait_list.flink_ptr;
 
   // init thread object
-  block->ExThreadObjectType.pool_tag = 0x65726854;
+  block->ExThreadObjectType.pool_tag = kThreadObjectTag;
   block->ExThreadObjectType.allocate_proc =
       kernel_trampoline_group_.NewLongtermTrampoline(AllocateThread);
 
@@ -1558,29 +1635,29 @@ void KernelState::InitializeKernelGuestGlobals() {
       kernel_trampoline_group_.NewLongtermTrampoline(SimpleForwardFreePool);
 
   // init event object
-  block->ExEventObjectType.pool_tag = 0x76657645;
+  block->ExEventObjectType.pool_tag = kEventObjectTag;
   block->ExEventObjectType.allocate_proc = trampoline_allocatepool;
   block->ExEventObjectType.free_proc = trampoline_freepool;
 
   // init mutant object
-  block->ExMutantObjectType.pool_tag = 0x6174754D;
+  block->ExMutantObjectType.pool_tag = kMutantObjectTag;
   block->ExMutantObjectType.allocate_proc = trampoline_allocatepool;
   block->ExMutantObjectType.free_proc = trampoline_freepool;
 
   block->ExMutantObjectType.delete_proc =
       kernel_trampoline_group_.NewLongtermTrampoline(DeleteMutant);
   // init semaphore obj
-  block->ExSemaphoreObjectType.pool_tag = 0x616D6553;
+  block->ExSemaphoreObjectType.pool_tag = kSemaphoreObjectTag;
   block->ExSemaphoreObjectType.allocate_proc = trampoline_allocatepool;
   block->ExSemaphoreObjectType.free_proc = trampoline_freepool;
   // init timer obj
-  block->ExTimerObjectType.pool_tag = 0x656D6954;
+  block->ExTimerObjectType.pool_tag = kTimerObjectTag;
   block->ExTimerObjectType.allocate_proc = trampoline_allocatepool;
   block->ExTimerObjectType.free_proc = trampoline_freepool;
   block->ExTimerObjectType.delete_proc =
       kernel_trampoline_group_.NewLongtermTrampoline(DeleteTimer);
   // iocompletion object
-  block->IoCompletionObjectType.pool_tag = 0x706D6F43;
+  block->IoCompletionObjectType.pool_tag = kIoCompletionObjectTag;
   block->IoCompletionObjectType.allocate_proc = trampoline_allocatepool;
   block->IoCompletionObjectType.free_proc = trampoline_freepool;
   block->IoCompletionObjectType.delete_proc =
@@ -1588,7 +1665,7 @@ void KernelState::InitializeKernelGuestGlobals() {
   block->IoCompletionObjectType.unknown_size_or_object_ = oddobject_offset;
 
   // iodevice object
-  block->IoDeviceObjectType.pool_tag = 0x69766544;
+  block->IoDeviceObjectType.pool_tag = kIoDeviceObjectTag;
   block->IoDeviceObjectType.allocate_proc = trampoline_allocatepool;
   block->IoDeviceObjectType.free_proc = trampoline_freepool;
   block->IoDeviceObjectType.unknown_size_or_object_ = oddobject_offset;
@@ -1596,7 +1673,7 @@ void KernelState::InitializeKernelGuestGlobals() {
       kernel_trampoline_group_.NewLongtermTrampoline(UnknownProcIoDevice);
 
   // file object
-  block->IoFileObjectType.pool_tag = 0x656C6946;
+  block->IoFileObjectType.pool_tag = kIoFileObjectTag;
   block->IoFileObjectType.allocate_proc = trampoline_allocatepool;
   block->IoFileObjectType.free_proc = trampoline_freepool;
   block->IoFileObjectType.unknown_size_or_object_ =
@@ -1609,18 +1686,28 @@ void KernelState::InitializeKernelGuestGlobals() {
       kernel_trampoline_group_.NewLongtermTrampoline(UnknownFileProc);
 
   // directory object
-  block->ObDirectoryObjectType.pool_tag = 0x65726944;
+  block->ObDirectoryObjectType.pool_tag = kObDirectoryObjectTag;
   block->ObDirectoryObjectType.allocate_proc = trampoline_allocatepool;
   block->ObDirectoryObjectType.free_proc = trampoline_freepool;
   block->ObDirectoryObjectType.unknown_size_or_object_ = oddobject_offset;
 
   // symlink object
-  block->ObSymbolicLinkObjectType.pool_tag = 0x626D7953;
+  block->ObSymbolicLinkObjectType.pool_tag = kObSymbolicLinkObjectTag;
   block->ObSymbolicLinkObjectType.allocate_proc = trampoline_allocatepool;
   block->ObSymbolicLinkObjectType.free_proc = trampoline_freepool;
   block->ObSymbolicLinkObjectType.unknown_size_or_object_ = oddobject_offset;
   block->ObSymbolicLinkObjectType.delete_proc =
       kernel_trampoline_group_.NewLongtermTrampoline(DeleteSymlink);
+
+  // enumerator object
+  block->EnumeratorObjectType.pool_tag = 6;
+  block->EnumeratorObjectType.allocate_proc =
+      kernel_trampoline_group_.NewLongtermTrampoline(AllocateEnumerator);
+  block->EnumeratorObjectType.free_proc =
+      kernel_trampoline_group_.NewLongtermTrampoline(FreeEnumerator);
+  block->EnumeratorObjectType.unknown_size_or_object_ = oddobject_offset;
+  block->EnumeratorObjectType.close_proc =
+      kernel_trampoline_group_.NewLongtermTrampoline(CloseEnumeratorProc);
 
 #define offsetof32(s, m) static_cast<uint32_t>(offsetof(s, m))
 
@@ -1642,7 +1729,19 @@ void KernelState::InitializeKernelGuestGlobals() {
            offsetof32(KernelGuestGlobals, ExMutantObjectType)},
       {XObject::Type::Device,
        kernel_guest_globals_ +
-           offsetof32(KernelGuestGlobals, IoDeviceObjectType)}};
+           offsetof32(KernelGuestGlobals, IoDeviceObjectType)},
+      {XObject::Type::Timer,
+       kernel_guest_globals_ +
+           offsetof32(KernelGuestGlobals, ExTimerObjectType)},
+      {XObject::Type::IOCompletion,
+       kernel_guest_globals_ +
+           offsetof32(KernelGuestGlobals, IoCompletionObjectType)},
+      {XObject::Type::SymbolicLink,
+       kernel_guest_globals_ +
+           offsetof32(KernelGuestGlobals, ObSymbolicLinkObjectType)},
+      {XObject::Type::Enumerator,
+       kernel_guest_globals_ +
+           offsetof32(KernelGuestGlobals, EnumeratorObjectType)}};
   xboxkrnl::xeKeSetEvent(&block->UsbdBootEnumerationDoneEvent, 1, 0);
 }
 

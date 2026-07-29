@@ -49,10 +49,10 @@ uint32_t xeMmAllocatePhysicalMemoryEx(uint32_t flags, uint32_t region_size,
                                       uint32_t alignment);
 dword_result_t xeMmQueryStatistics(
     pointer_t<X_MM_QUERY_STATISTICS_RESULT> stats_ptr);
-uint32_t xeAllocatePoolTypeWithTag(PPCContext* context, uint32_t size,
+uint32_t xeAllocatePoolTypeWithTag(KernelState* kernel_state, uint32_t size,
                                    uint32_t tag, uint32_t pool_selector);
 
-void xeFreePool(PPCContext* context, uint32_t base_address);
+void xeFreePool(KernelState* kernel_state, uint32_t base_address);
 
 uint32_t xeMmCreateKernelStack(uint32_t size, uint32_t r4);
 }  // namespace xboxkrnl

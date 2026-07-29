@@ -73,7 +73,8 @@ bool GrowHandleTable(uint32_t table_ptr, PPCContext* context) {
   }
 
   uint32_t new_bucket = xboxkrnl::xeAllocatePoolTypeWithTag(
-      context, SIZE_PER_HANDLE_BUCKET, 'tHbO', table->unk_pool_arg_34);
+      context->kernel_state, SIZE_PER_HANDLE_BUCKET, 'tHbO',
+      table->unk_pool_arg_34);
   if (!new_bucket) {
     return false;
   }
@@ -87,7 +88,7 @@ bool GrowHandleTable(uint32_t table_ptr, PPCContext* context) {
   if (new_bucket_handle_base) {
     // bucket list realloc logic starts here
     uint32_t new_dynamic_buckets = xboxkrnl::xeAllocatePoolTypeWithTag(
-        context,
+        context->kernel_state,
         sizeof(uint32_t) * ((new_bucket_handle_base / SIZE_PER_HANDLE_BUCKET) +
                             BUCKET_SLOT_GROWTH),
         'rHbO', table->unk_pool_arg_34);
@@ -102,14 +103,15 @@ bool GrowHandleTable(uint32_t table_ptr, PPCContext* context) {
 
       if (context->TranslateVirtualBE<uint32_t>(table->table_dynamic_buckets) !=
           &table->table_static_buckets[0]) {
-        xboxkrnl::xeFreePool(context, table->table_dynamic_buckets);
+        xboxkrnl::xeFreePool(context->kernel_state,
+                             table->table_dynamic_buckets);
       }
       table->table_dynamic_buckets = new_dynamic_buckets;
       InitializeNewHandleRange(table, context, new_bucket_handle_base,
                                new_bucket);
       return true;
     }
-    xboxkrnl::xeFreePool(context, new_bucket);
+    xboxkrnl::xeFreePool(context->kernel_state, new_bucket);
     return false;
   }
   table->table_dynamic_buckets =

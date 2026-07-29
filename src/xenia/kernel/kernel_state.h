@@ -55,6 +55,17 @@ constexpr uint32_t X_PROCTYPE_IDLE = 0;
 constexpr uint32_t X_PROCTYPE_TITLE = 1;
 constexpr uint32_t X_PROCTYPE_SYSTEM = 2;
 
+constexpr fourcc_t kThreadObjectTag = make_fourcc("erhT");
+constexpr fourcc_t kEventObjectTag = make_fourcc("vevE");
+constexpr fourcc_t kMutantObjectTag = make_fourcc("atuM");
+constexpr fourcc_t kSemaphoreObjectTag = make_fourcc("ameS");
+constexpr fourcc_t kTimerObjectTag = make_fourcc("emiT");
+constexpr fourcc_t kIoCompletionObjectTag = make_fourcc("pmoC");
+constexpr fourcc_t kIoDeviceObjectTag = make_fourcc("iveD");
+constexpr fourcc_t kIoFileObjectTag = make_fourcc("eliF");
+constexpr fourcc_t kObDirectoryObjectTag = make_fourcc("eriD");
+constexpr fourcc_t kObSymbolicLinkObjectTag = make_fourcc("bmyS");
+
 struct X_KPROCESS {
   X_KSPINLOCK thread_list_spinlock;
   // list of threads in this process, guarded by the spinlock above
@@ -116,6 +127,10 @@ struct KernelGuestGlobals {
   X_OBJECT_TYPE IoFileObjectType;
   X_OBJECT_TYPE ObDirectoryObjectType;
   X_OBJECT_TYPE ObSymbolicLinkObjectType;
+
+  // from xam.xex, this is not exported
+  X_OBJECT_TYPE EnumeratorObjectType;
+
   // a constant buffer that some object types' "unknown_size_or_object" field
   // points to
   X_DISPATCH_HEADER XboxKernelDefaultObject;
@@ -218,6 +233,15 @@ class KernelState {
 
   uint32_t AllocateTLS(cpu::ppc::PPCContext* context);
   void FreeTLS(cpu::ppc::PPCContext* context, uint32_t slot);
+
+  uint32_t AllocateObject(XObject::Type type, uint32_t size, uint32_t tag,
+                          uint32_t pool_type);
+  void FreeObject(XObject::Type type, uint32_t object_ptr);
+
+  uint32_t GetGuestObjectType(XObject::Type type) const;
+  XObject::Type GetHostObjectType(uint32_t guest_object_type) const;
+
+  uint32_t GetCurrentPoolType() const;
 
   void RegisterTitleTerminateNotification(uint32_t routine, uint32_t priority);
   void RemoveTitleTerminateNotification(uint32_t routine);
