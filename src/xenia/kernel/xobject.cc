@@ -13,6 +13,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
+#include "xenia/kernel/xdevice.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xevent.h"
 #include "xenia/kernel/xfile.h"
@@ -147,6 +148,8 @@ object_ref<XObject> XObject::Restore(KernelState* kernel_state, Type type,
       return XThread::Restore(kernel_state, stream);
     case Type::Timer:
       break;
+    case Type::Device:
+      return XDevice::Restore(kernel_state, stream);
     case Type::Undefined:
       break;
   }
@@ -467,6 +470,13 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
         // Can't report failure to the guest at late initialization:
         assert_true(success);
         result = sem;
+      } break;
+      case Type::Device: {
+        // We don't stash device handles right now so don't create new handles.
+        auto device = new XDevice(nullptr);
+        device->kernel_state_ = kernel_state;
+        device->InitializeNative(native_ptr);
+        result = device;
       } break;
       default:
         assert_always();

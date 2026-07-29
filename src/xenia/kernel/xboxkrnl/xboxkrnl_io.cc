@@ -12,6 +12,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
+#include "xenia/kernel/xdevice.h"
 #include "xenia/kernel/xevent.h"
 #include "xenia/kernel/xfile.h"
 #include "xenia/kernel/xiocompletion.h"
@@ -699,21 +700,17 @@ dword_result_t IoCreateDevice_entry(dword_t driver_object,
   // 0x24 is guessed size from accesses to out_struct - likely incorrect
   auto current_kernel = ctx->kernel_state;
 
-  uint32_t required_size = 80 + xe::align<uint32_t>(device_extension_size, 8);
-
   auto kernel_mem = current_kernel->memory();
 
-  auto out_guest = kernel_mem->SystemHeapAlloc(required_size);
+  auto device = new XDevice(current_kernel);
+  device->Initialize(device_extension_size);
 
-  auto out = kernel_mem->TranslateVirtual<uint8_t*>(out_guest);
+  uint32_t guest_address = device->guest_object();
+  auto guest_device =
+      current_kernel->memory()->TranslateVirtual<X_DEVICE_OBJECT*>(
+          guest_address);
 
-  memset(out, 0, required_size);
-
-  xe::store<unsigned char>(out, 3);  // maybe device object's Ob type?
-
-  // this stores the total object size, without alignment!
-
-  xe::store_and_swap<uint16_t>(out + 2, device_extension_size + 80);
+  guest_device->type = 3;
 
   // from 17559
   if (device_type == 7 || device_type == 58 || device_type == 62 ||
@@ -722,28 +719,29 @@ dword_result_t IoCreateDevice_entry(dword_t driver_object,
       device_type == 65 || device_type == 66 || device_type == 67 ||
       device_type == 68 || device_type == 69 || device_type == 70 ||
       device_type == 72 || device_type == 73) {
-    xe::store_and_swap<uint32_t>(out + 0xC, 0);
+    guest_device->mounted_device_ptr = 0;
   } else {
-    // pointer to itself?
-    xe::store_and_swap<uint32_t>(out + 0xC, out_guest);
+    guest_device->mounted_device_ptr = guest_address;
   }
-  xe::store<uint8_t>(out + 0x1C, static_cast<uint8_t>(device_type));
+
+  guest_device->device_type = device_type.value();
 
   uint32_t flags_field_value = 16;
   if (device_name) {
     flags_field_value |= 8;
   }
-  xe::store<unsigned char>(out + 0x1e, 1);
-  xe::store_and_swap<uint32_t>(out + 0x14, flags_field_value);
+  guest_device->stack_size = 1;
+  guest_device->flags = flags_field_value;
   if (device_extension_size != 0) {
     // pointer to device specific data
     //  XMountUtilityDrive writes some kind of header here
-    xe::store_and_swap<uint32_t>(out + 0x18, out_guest + 80);
+    guest_device->device_extension_ptr =
+        guest_address + sizeof(X_DEVICE_OBJECT);
   }
 
-  xe::store_and_swap<uint32_t>(out + 8, driver_object);
+  guest_device->driver_object_ptr = driver_object.value();
 
-  *device_object = out_guest;
+  *device_object = guest_address;
   return X_STATUS_SUCCESS;
 }
 DECLARE_XBOXKRNL_EXPORT1(IoCreateDevice, kFileSystem, kStub);
