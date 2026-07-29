@@ -383,17 +383,18 @@ void XObject::SetNativePointer(uint32_t native_ptr, bool uninitialized) {
   // If hit: We've already setup the native ptr with CreateNative!
   assert_zero(guest_object_ptr_);
 
-  auto header =
-      kernel_state_->memory()->TranslateVirtual<X_DISPATCH_HEADER*>(native_ptr);
+  if (HasDispatcherHeader(type_)) {
+    auto header = kernel_state_->memory()->TranslateVirtual<X_DISPATCH_HEADER*>(
+        native_ptr);
 
-  // Memory uninitialized, so don't bother with the check.
-  if (!uninitialized) {
-    assert_true(!(header->wait_list.blink_ptr & 0x1));
+    // Memory uninitialized, so don't bother with the check.
+    if (!uninitialized) {
+      assert_true(!(header->wait_list.blink_ptr & 0x1));
+    }
+
+    // Stash pointer in struct.
+    StashHandle(header, handle());
   }
-
-  // Stash pointer in struct.
-  // FIXME: This assumes the object has a dispatch header (some don't!)
-  StashHandle(header, handle());
 
   guest_object_ptr_ = native_ptr;
 }
@@ -412,69 +413,68 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
   // each time.
   // We identify this by setting wait_list.flink_ptr to a magic value. When set,
   // wait_list.blink_ptr will hold a handle to our object.
+  // FIXME: This is the wrong way to do it as not every object has a dispatch
+  // header.
   if (!already_locked) {
     global_critical_region::mutex().lock();
   }
 
   XObject* result = nullptr;
 
-  auto header = reinterpret_cast<X_DISPATCH_HEADER*>(native_ptr);
-  X_DISPATCHER_FLAGS type = as_type;
+  auto header = reinterpret_cast<X_OBJECT_HEADER*>(
+      reinterpret_cast<uintptr_t>(native_ptr) - sizeof(X_OBJECT_HEADER));
+  auto host_type = kernel_state->GetHostObjectType(header->object_type_ptr);
+  bool has_object_header = host_type != Type::Undefined;
 
-  if (as_type == X_DISPATCHER_FLAGS::DISPATCHER_UNDEFINED) {
-    type = header->type;
+  X_DISPATCH_HEADER* dispatch_header = nullptr;
+  // FIXME: We shouldn't assume no object header means it has a dispatch header
+  if (HasDispatcherHeader(host_type) || !has_object_header) {
+    dispatch_header = reinterpret_cast<X_DISPATCH_HEADER*>(native_ptr);
   }
 
-  if (header->wait_list.flink_ptr == kXObjSignature) {
+  if (!has_object_header) {
+    host_type = XObject::MapGuestTypeToHost(dispatch_header->type);
+  }
+
+  assert_true(as_type == X_DISPATCHER_FLAGS::DISPATCHER_UNDEFINED ||
+              XObject::MapGuestTypeToHost(as_type) == host_type);
+
+  if (dispatch_header &&
+      dispatch_header->wait_list.flink_ptr == kXObjSignature) {
     // Already initialized.
-    // TODO: assert if the type of the object != as_type
-    uint32_t handle = header->wait_list.blink_ptr;
+    uint32_t handle = dispatch_header->wait_list.blink_ptr;
     result = kernel_state->object_table()
                  ->LookupObject<XObject>(handle, true)
                  .release();
+    assert_true(result->type() == host_type);
   } else {
     // First use, create new.
     // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
-    switch (type) {
-      case X_DISPATCHER_FLAGS::DISPATCHER_MANUAL_RESET_EVENT:
-      case X_DISPATCHER_FLAGS::DISPATCHER_AUTO_RESET_EVENT: {
+    switch (host_type) {
+      case Type::Event: {
         auto ev = new XEvent(kernel_state);
-        ev->InitializeNative(native_ptr, header);
+        ev->InitializeNative(native_ptr);
         result = ev;
       } break;
-      case X_DISPATCHER_FLAGS::DISPATCHER_MUTANT: {
+      case Type::Mutant: {
         auto mutant = new XMutant(kernel_state);
-        mutant->InitializeNative(native_ptr, header);
+        mutant->InitializeNative(native_ptr);
         result = mutant;
       } break;
-      case X_DISPATCHER_FLAGS::DISPATCHER_SEMAPHORE: {
+      case Type::Semaphore: {
         auto sem = new XSemaphore(kernel_state);
-        auto success = sem->InitializeNative(native_ptr, header);
+        auto success = sem->InitializeNative(native_ptr);
         // Can't report failure to the guest at late initialization:
         assert_true(success);
         result = sem;
       } break;
-      case 3:   // ProcessObject
-      case 4:   // QueueObject
-      case 6:   // ThreadObject
-      case 7:   // GateObject
-      case 8:   // TimerNotificationObject
-      case 9:   // TimerSynchronizationObject
-      case 18:  // ApcObject
-      case 19:  // DpcObject
-      case 20:  // DeviceQueueObject
-      case 21:  // EventPairObject
-      case 22:  // InterruptObject
-      case 23:  // ProfileObject
-      case 24:  // ThreadedDpcObject
       default:
         assert_always();
         result = nullptr;
     }
-    // Stash pointer in struct.
-    // FIXME: This assumes the object contains a dispatch header (some don't!)
     if (result) {
-      StashHandle(header, result->handle());
+      result->SetNativePointer(
+          kernel_state->memory()->HostToGuestVirtual(native_ptr), true);
     }
   }
 

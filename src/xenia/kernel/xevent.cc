@@ -33,11 +33,12 @@ void XEvent::Initialize(bool manual_reset, bool initial_state) {
   assert_not_null(event_);
 }
 
-void XEvent::InitializeNative(void* native_ptr,
-                              const X_DISPATCH_HEADER* header) {
+void XEvent::InitializeNative(void* native_ptr) {
   assert_false(event_);
 
-  switch (header->type) {
+  auto native_event = reinterpret_cast<X_KEVENT*>(native_ptr);
+
+  switch (native_event->header.type) {
     case X_DISPATCHER_FLAGS::DISPATCHER_MANUAL_RESET_EVENT:
       manual_reset_ = true;
       break;
@@ -49,7 +50,7 @@ void XEvent::InitializeNative(void* native_ptr,
       return;
   }
 
-  bool initial_state = header->signal_state ? true : false;
+  bool initial_state = native_event->header.signal_state ? true : false;
   if (manual_reset_) {
     event_ = xe::threading::Event::CreateManualResetEvent(initial_state);
   } else {

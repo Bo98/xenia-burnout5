@@ -26,8 +26,7 @@ class XSemaphore : public XObject {
   ~XSemaphore() override;
 
   [[nodiscard]] bool Initialize(int32_t initial_count, int32_t maximum_count);
-  [[nodiscard]] bool InitializeNative(void* native_ptr,
-                                      const X_DISPATCH_HEADER* header);
+  [[nodiscard]] bool InitializeNative(void* native_ptr);
 
   [[nodiscard]] bool ReleaseSemaphore(int32_t release_count,
                                       int32_t* out_previous_count);
