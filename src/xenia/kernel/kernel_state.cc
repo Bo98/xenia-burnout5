@@ -1742,7 +1742,7 @@ void KernelState::InitializeKernelGuestGlobals() {
       {XObject::Type::Enumerator,
        kernel_guest_globals_ +
            offsetof32(KernelGuestGlobals, EnumeratorObjectType)}};
-  xboxkrnl::xeKeSetEvent(&block->UsbdBootEnumerationDoneEvent, 1, 0);
+  block->UsbdBootEnumerationDoneEvent.header.signal_state = 1;
 }
 
 void KernelState::InitializeXbdmCpuCounters() {
