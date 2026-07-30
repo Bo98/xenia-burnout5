@@ -443,11 +443,11 @@ X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
       keystroke_flags |= 0x0008;  // XINPUT_KEYSTROKE_SHIFT
     }
 
-    if (IsKeyToggled(VK_CONTROL)) {
+    if (IsKeyDown(VK_CONTROL)) {
       keystroke_flags |= 0x0010;  // XINPUT_KEYSTROKE_CTRL
     }
 
-    if (IsKeyToggled(VK_MENU)) {
+    if (IsKeyDown(VK_MENU)) {
       keystroke_flags |= 0x0020;  // XINPUT_KEYSTROKE_ALT
     }
   }
