@@ -470,6 +470,9 @@ X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
         WCHAR buf;
         if (ToUnicode(vk, sc, key_map_, &buf, 1, 0) == 1) {
           keystroke_flags |= 0x1000;  // XINPUT_KEYSTROKE_VALIDUNICODE
+          if (buf == L'\r') {
+            buf = L'\n';  // XInput uses LF for VK_RETURN
+          }
           unicode = buf;
         }
       }
