@@ -822,55 +822,62 @@ dword_result_t XamReadTileToTexture_entry(dword_t tile_type, dword_t title_id,
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  size_t buffer_size = size_t(stride) * size_t(tile_height);
+  auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    size_t buffer_size = size_t(stride) * size_t(tile_height);
 
-  auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
-  if (!user) {
-    return X_ERROR_INVALID_PARAMETER;
-  }
+    auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+    if (!user) {
+      extended_error = X_E_NO_SUCH_USER;
+      return X_ERROR_FUNCTION_FAILED;
+    }
 
-  std::span<const uint8_t> tile =
-      kernel_state()->xam_state()->user_tracker()->GetIcon(
-          user->xuid(), title_id, static_cast<XTileType>(tile_type.value()),
-          tile_id);
+    std::span<const uint8_t> tile =
+        kernel_state()->xam_state()->user_tracker()->GetIcon(
+            user->xuid(), title_id, static_cast<XTileType>(tile_type.value()),
+            tile_id);
 
-  if (tile.empty()) {
+    if (tile.empty()) {
+      return X_ERROR_SUCCESS;
+    }
+
+    int width, height, channels;
+    unsigned char* imageData =
+        stbi_load_from_memory(tile.data(), static_cast<int>(tile.size()),
+                              &width, &height, &channels, STBI_rgb_alpha);
+
+    size_t icon_dimmension_size = width * height;
+    std::fill_n(reinterpret_cast<uint8_t*>(buffer_ptr.host_address()),
+                icon_dimmension_size * sizeof(uint32_t), 0);
+
+    for (int i = 0; i < icon_dimmension_size; i++) {
+      unsigned char* pixel = &imageData[i * sizeof(uint32_t)];
+
+      // RGBA to ARGB. TODO: Find faster method!
+      // RGBA->AGBR
+      std::swap(pixel[0], pixel[3]);
+      // AGBR->ARBG
+      std::swap(pixel[1], pixel[3]);
+      // ARBG->ARGB
+      std::swap(pixel[2], pixel[3]);
+    }
+
+    memcpy(buffer_ptr, imageData,
+           std::min(buffer_size, static_cast<size_t>(icon_dimmension_size *
+                                                     sizeof(uint32_t))));
+
+    stbi_image_free(imageData);
+
     return X_ERROR_SUCCESS;
-  }
-
-  int width, height, channels;
-  unsigned char* imageData =
-      stbi_load_from_memory(tile.data(), static_cast<int>(tile.size()), &width,
-                            &height, &channels, STBI_rgb_alpha);
-
-  size_t icon_dimmension_size = width * height;
-  std::fill_n(reinterpret_cast<uint8_t*>(buffer_ptr.host_address()),
-              icon_dimmension_size * sizeof(uint32_t), 0);
-
-  for (int i = 0; i < icon_dimmension_size; i++) {
-    unsigned char* pixel = &imageData[i * sizeof(uint32_t)];
-
-    // RGBA to ARGB. TODO: Find faster method!
-    // RGBA->AGBR
-    std::swap(pixel[0], pixel[3]);
-    // AGBR->ARBG
-    std::swap(pixel[1], pixel[3]);
-    // ARBG->ARGB
-    std::swap(pixel[2], pixel[3]);
-  }
-
-  memcpy(buffer_ptr, imageData,
-         std::min(buffer_size, static_cast<size_t>(icon_dimmension_size *
-                                                   sizeof(uint32_t))));
-
-  stbi_image_free(imageData);
+  };
 
   if (overlapped_ptr) {
-    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
-                                                X_ERROR_SUCCESS);
+    kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
     return X_ERROR_IO_PENDING;
   }
-  return X_ERROR_SUCCESS;
+
+  uint32_t extended_error, length;
+  auto result = run(extended_error, length);
+  return XSUCCEEDED(result) ? result : extended_error;
 }
 DECLARE_XAM_EXPORT1(XamReadTileToTexture, kUserProfiles, kStub);
 
