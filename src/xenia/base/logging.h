@@ -204,7 +204,7 @@ void XELOGCPU(std::string_view format, const Args&... args) {
 
 template <typename... Args>
 void XELOGAPU(std::string_view format, const Args&... args) {
-  xe::logging::AppendLogLineFormat(xe::LogSrc::Apu, xe::LogLevel::Debug, 'A',
+  xe::logging::AppendLogLineFormat(xe::LogSrc::Apu, xe::LogLevel::Trace, 'A',
                                    format, args...);
 }
 
