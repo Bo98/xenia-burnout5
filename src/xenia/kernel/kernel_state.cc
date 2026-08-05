@@ -41,6 +41,8 @@ DEFINE_uint32(kernel_build_version, 1888, "Define current kernel version",
 
 DECLARE_string(cl);
 
+DECLARE_int32(network_mode);
+
 namespace xe {
 namespace kernel {
 
@@ -122,6 +124,33 @@ uint32_t KernelState::title_id() const {
 }
 
 bool KernelState::is_title_open() const { return emulator_->is_title_open(); }
+
+XLiveAPI* KernelState::GetXboxLiveAPI() const {
+  return emulator()->GetXboxLiveAPI();
+}
+
+bool KernelState::is_title_system_type(uint32_t title_id) {
+  if (!title_id) {
+    return true;
+  }
+
+  if ((title_id & 0xFF000000) == 0x58000000u) {
+    return (title_id & 0xFF0000) != 0x410000;  // if 'X' but not 'XA' (XBLA)
+  }
+
+  return (title_id >> 16) == 0xFFFE;
+}
+
+XNKEY* KernelState::title_lan_key() const {
+  if (!executable_module_) {
+    return nullptr;
+  }
+
+  xex2_opt_lan_key* opt_lan_key_ptr = 0;
+  executable_module_->GetOptHeader(XEX_HEADER_LAN_KEY, &opt_lan_key_ptr);
+
+  return reinterpret_cast<XNKEY*>(opt_lan_key_ptr->key);
+}
 
 const std::unique_ptr<xam::SpaInfo> KernelState::title_xdbf() const {
   return module_xdbf(executable_module_);
@@ -1026,14 +1055,40 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     has_notified_startup_ = true;
     listener->EnqueueNotification(kXNotificationSystemUI,
                                   xam_state()->IsUIActive());
-    listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
+
+    const auto signed_in_players =
+        xam_state()->profile_manager()->GetUsedUserSlots().to_ulong();
+
+    listener->EnqueueNotification(kXNotificationSystemSignInChanged,
+                                  signed_in_players);
   }
+
   if (!has_notified_live_startup_ && listener->mask() & kXNotifyLive) {
     has_notified_live_startup_ = true;
-    // X_ONLINE_S_LOGON_DISCONNECTED
+
+    // Expects notification:
+    // 415707D1 fails to join sessions.
+    // 4E4D07D3 gets stuck in online menus.
+    const uint32_t live_connection_state =
+        xam_state()->user_tracker()->LoggedInToLive()
+            ? X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED
+            : X_ONLINE_S_LOGON_DISCONNECTED;
+
     listener->EnqueueNotification(kXNotificationLiveConnectionChanged,
-                                  0x001510F1L);
-    listener->EnqueueNotification(kXNotificationLiveLinkStateChanged, 0);
+                                  live_connection_state);
+
+    listener->EnqueueNotification(kXNotificationLiveVoicechatAway, 0);
+  }
+
+  // 4E4D07ED, 58410869. Fixes creating Xbox Live sessions.
+  // 4D5307D4 expects multiple notifications to access Xbox Live menus.
+  // Sign in related
+  if (listener->mask() == (kXNotifySystem | kXNotifyLive)) {
+    const auto signed_in_players =
+        xam_state()->profile_manager()->GetUsedUserSlots().to_ulong();
+
+    listener->EnqueueNotification(kXNotificationSystemSignInChanged,
+                                  signed_in_players);
   }
 }
 
@@ -1062,6 +1117,17 @@ void KernelState::CompleteOverlapped(uint32_t overlapped_ptr, X_RESULT result) {
 void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
                                        uint32_t extended_error,
                                        uint32_t length) {
+  // If function failed then overwrite return error.
+  // What if a function expects a different return error?
+  if (result != X_ERROR_SUCCESS) {
+    result = X_ERROR_FUNCTION_FAILED;
+
+    // Function failed without setting extended_error.
+    if (extended_error == X_ERROR_SUCCESS) {
+      extended_error = X_E_FUNCTION_FAILED;
+    }
+  }
+
   auto ptr = memory()->TranslateVirtual(overlapped_ptr);
   XOverlappedSetResult(ptr, result);
   XOverlappedSetExtendedError(ptr, extended_error);
@@ -1162,10 +1228,31 @@ void KernelState::CompleteOverlappedDeferredEx(
     if (pre_callback) {
       pre_callback();
     }
-    // 5454082B infinitely loads free roam in netplay without sleep.
+    /*
+     5454082B infinitely loads free roam in netplay without sleep.
+     Small delay fixes it e.g. 25ms.
+
+     53450814 black screens in netplay before main menu with high delay e.g.
+     100ms.
+     Small delay fixes it e.g. 25ms.
+
+     55530848 and 55530816 fail to create Xbox Live session with high delay e.g.
+     100ms.
+     Small delay fixes it e.g. 25ms.
+
+     555307EE quickly disconnects from session with high delay e.g.
+     100ms.
+     Small delay fixes it e.g. 25ms.
+
+     4C4107ED internal log says "timed out connecting" and crashes attempting to
+     join session via custom search with a delay of 25ms.
+     Smaller delay fixes it e.g. 5ms.
+    */
     xe::threading::Sleep(kDeferredOverlappedDelayMillis);
-    uint32_t extended_error, length;
-    auto result = completion_callback(extended_error, length);
+    uint32_t extended_error = 0;
+    uint32_t length = 0;
+    uint32_t result = completion_callback(extended_error, length);
+
     CompleteOverlappedEx(overlapped_ptr, result, extended_error, length);
     if (post_callback) {
       post_callback();

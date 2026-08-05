@@ -15,6 +15,8 @@
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/app_manager.h"
 #include "xenia/kernel/xam/content_manager.h"
+#include "xenia/kernel/xam/friends_manager.h"
+#include "xenia/kernel/xam/presence_manager.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam.h"
@@ -44,21 +46,32 @@ class XamState {
     return achievement_manager_.get();
   }
   ProfileManager* profile_manager() const { return profile_manager_.get(); }
+  FriendsManager* friends_manager() const { return friends_manager_.get(); }
+  PresenceManager* presence_manager() const { return presence_manager_.get(); }
 
   UserTracker* user_tracker() const { return user_tracker_.get(); }
   SpaInfo* spa_info() const { return spa_info_.get(); }
 
   UserProfile* GetUserProfile(uint32_t user_index) const;
   UserProfile* GetUserProfile(uint64_t xuid) const;
+  UserProfile* GetUserProfileLive(uint64_t xuid) const;
+  UserProfile* GetUserProfileAny(uint64_t xuid) const;
+
+  uint8_t GetUserIndexAssignedToProfileFromXUID(uint64_t xuid) const;
 
   bool IsUserSignedIn(uint32_t user_index) const;
   bool IsUserSignedIn(uint64_t xuid) const;
 
   void LoadSpaInfo(const SpaInfo* info);
 
+  void StartPeriodicMaintenance() const;
+  void StopPeriodicMaintenance() const;
+
   void SetContentRegisterCallback(uint32_t callback);
 
   bool IsUIActive() const { return is_xam_dialog_present_.load(); }
+
+  uint32_t GetOnlineSchemaAddress() const { return online_schema_data_address; }
 
   uint32_t GetLanguageFallbackAddress(uint32_t index) const {
     return language_fallback_address_[index];
@@ -76,9 +89,11 @@ class XamState {
   std::atomic<bool> is_xam_dialog_present_ = false;
 
  private:
+  void LoadOnlineSchema();
   void LoadLanguageLocaleFallback();
   void LoadLanguageTypefacePatch();
   void LoadIptvServiceName();
+  void LoadOnlineFriends();
 
   KernelState* kernel_state_;
 
@@ -87,10 +102,13 @@ class XamState {
   std::unique_ptr<UserTracker> user_tracker_;
   std::unique_ptr<AchievementManager> achievement_manager_;
   std::unique_ptr<ProfileManager> profile_manager_;
+  std::unique_ptr<FriendsManager> friends_manager_;
+  std::unique_ptr<PresenceManager> presence_manager_;
 
   std::unique_ptr<SpaInfo> spa_info_;
 
   // Custom XAM stuff
+  uint32_t online_schema_data_address;
   std::array<uint32_t, 0x12> language_fallback_address_{};
   std::array<uint32_t, 0x7> language_type_face_patch_{};
   uint32_t iptv_name_address_{};

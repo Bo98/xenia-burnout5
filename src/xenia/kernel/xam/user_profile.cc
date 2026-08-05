@@ -10,8 +10,12 @@
 #include "xenia/kernel/xam/user_profile.h"
 
 #include "third_party/fmt/include/fmt/format.h"
-#include "xenia/kernel/kernel_state.h"
+#include "xenia/emulator.h"
+#include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/util/friends_util.h"
+#include "xenia/kernel/util/presence_string_builder.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/util/xlast.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
 
 namespace xe {
@@ -28,6 +32,34 @@ UserProfile::UserProfile(const uint64_t xuid,
 
   LoadProfileIcon(XTileType::kGamerTile);
   LoadProfileIcon(XTileType::kGamerTileSmall);
+
+  LoadProfileIcon(XTileType::kAvatarGamerTile);
+  LoadProfileIcon(XTileType::kAvatarGamerTileSmall);
+}
+
+void UserProfile::LoadFriends() {
+  const auto xam_state = kernel_state()->xam_state();
+
+  if (!xam_state) {
+    return;
+  }
+
+  friends_.clear();
+
+  xam_state->friends_manager()->AddFriends(xuid_, ParseFriendsXUIDs());
+
+  xam_state->friends_manager()->AddDummyFriends(
+      xuid_, kernel_state()->GetXboxLiveAPI()->GetDummyFriendsCount());
+}
+
+bool UserProfile::IsSignedInToLive() const {
+  return signin_state() == X_USER_SIGNIN_STATE::SignedInToLive;
+}
+
+X_USER_SIGNIN_STATE UserProfile::signin_state() const {
+  return IsLiveEnabled() && cvars::network_mode == NETWORK_MODE::XBOXLIVE
+             ? X_USER_SIGNIN_STATE::SignedInToLive
+             : X_USER_SIGNIN_STATE::SignedInLocally;
 }
 
 GpdInfo* UserProfile::GetGpd(const uint32_t title_id) {
@@ -179,6 +211,52 @@ bool UserProfile::WriteGpd(const uint32_t title_id) {
                   &written_bytes);
   file->Destroy();
   return true;
+}
+
+void UserProfile::SetSelfInvite(X_INVITE_INFO invite_info) {
+  self_invite = invite_info;
+}
+
+std::u16string UserProfile::GetPresenceString() const {
+  return online_presence_desc_;
+}
+
+std::optional<object_ref<XSession>> UserProfile::FindValidInviteSession() {
+  object_ref<XSession> valid_session = nullptr;
+
+  for (const auto& session : GetOwnedSessions()) {
+    if (session->IsHost() && session->IsCreated() &&
+        session->IsXboxLiveSession() && session->IsInvitesEnabled() &&
+        session->GetMembersCount()) {
+      if (session->IsJoinInProgressEnabled()) {
+        valid_session = session;
+      } else if (!session->IsSessionStarted() || session->IsSessionEnded()) {
+        valid_session = session;
+      }
+
+      // Prioritize session with most slots.
+      if (valid_session) {
+        if (session->GetTotalMaxSlots() > valid_session->GetTotalMaxSlots()) {
+          valid_session = session;
+        }
+      }
+    }
+  }
+
+  if (!valid_session) {
+    return std::nullopt;
+  }
+
+  return valid_session;
+}
+
+void UserProfile::SetDiscordInviteSessionDetails(
+    const XSESSION_LOCAL_DETAILS& session_details) {
+  discord_invite_session_details_ = session_details;
+}
+
+XSESSION_LOCAL_DETAILS UserProfile::GetDiscordInviteSessionDetails() const {
+  return discord_invite_session_details_;
 }
 
 }  // namespace xam

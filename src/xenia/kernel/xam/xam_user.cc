@@ -11,12 +11,17 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_modules.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/kernel/xsession.h"
+#include "xenia/ui/imgui_drawer.h"
+#include "xenia/ui/resources.h"
 #include "xenia/xbox.h"
 
 #include "third_party/stb/stb_image.h"
@@ -24,10 +29,14 @@
 DECLARE_int32(user_language);
 DECLARE_int32(user_country);
 
+DECLARE_bool(offline_mode);
+
 namespace xe {
 namespace kernel {
 namespace xam {
 
+// XUserGetXUID = XamUserGetXUID(user_index, X_USER_XUID_OFFLINE |
+// X_USER_XUID_ONLINE | X_USER_XUID_GUEST, xuid_ptr)
 X_HRESULT_result_t XamUserGetXUID_entry(dword_t user_index, dword_t type_mask,
                                         lpqword_t xuid_ptr) {
   assert_true(type_mask == 1 || type_mask == 2 || type_mask == 3 ||
@@ -52,16 +61,18 @@ X_HRESULT_result_t XamUserGetXUID_entry(dword_t user_index, dword_t type_mask,
   uint32_t result = X_E_NO_SUCH_USER;
   uint64_t xuid = 0;
 
-  auto type = user_profile->type() & type_mask;
-  if (type & (2 | 4)) {
-    // maybe online profile?
-    xuid = user_profile->xuid();
+  if ((type_mask & X_USER_XUID_ONLINE)) {
+    xuid = user_profile->GetLogonXUID();
     result = X_E_SUCCESS;
-  } else if (type & 1) {
-    // maybe offline profile?
+  } else if ((type_mask & X_USER_XUID_OFFLINE)) {
     xuid = user_profile->xuid();
     result = X_E_SUCCESS;
   }
+
+  if (type_mask == X_USER_XUID_GUEST) {
+    result = X_E_NO_SUCH_USER;
+  }
+
   *xuid_ptr = xuid;
   return result;
 }
@@ -73,10 +84,8 @@ dword_result_t XamUserGetIndexFromXUID_entry(qword_t xuid, dword_t flags,
     return X_E_INVALIDARG;
   }
 
-  const uint8_t user_index = kernel_state()
-                                 ->xam_state()
-                                 ->profile_manager()
-                                 ->GetUserIndexAssignedToProfile(xuid);
+  const uint8_t user_index =
+      kernel_state()->xam_state()->GetUserIndexAssignedToProfileFromXUID(xuid);
 
   if (user_index == XUserIndexAny) {
     return X_E_NO_SUCH_USER;
@@ -89,9 +98,9 @@ dword_result_t XamUserGetIndexFromXUID_entry(qword_t xuid, dword_t flags,
 DECLARE_XAM_EXPORT1(XamUserGetIndexFromXUID, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetSigninState_entry(dword_t user_index) {
-  uint32_t signin_state = 0;
+  X_USER_SIGNIN_STATE signin_state = X_USER_SIGNIN_STATE::NotSignedIn;
   if (user_index >= XUserMaxUserCount) {
-    return signin_state;
+    return static_cast<uint32_t>(signin_state);
   }
 
   if (kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
@@ -99,18 +108,19 @@ dword_result_t XamUserGetSigninState_entry(dword_t user_index) {
         kernel_state()->xam_state()->GetUserProfile(user_index);
     signin_state = user_profile->signin_state();
   }
-  return signin_state;
+
+  return static_cast<uint32_t>(signin_state);
 }
 DECLARE_XAM_EXPORT2(XamUserGetSigninState, kUserProfiles, kImplemented,
                     kHighFrequency);
 
 X_HRESULT_result_t XamUserGetSigninInfo_entry(
-    dword_t user_index, dword_t flags, pointer_t<X_USER_SIGNIN_INFO> info) {
-  if (!info) {
+    dword_t user_index, dword_t flags, pointer_t<X_USER_SIGNIN_INFO> info_ptr) {
+  if (!info_ptr) {
     return X_E_INVALIDARG;
   }
 
-  info.Zero();
+  info_ptr.Zero();
 
   if (user_index >= XUserMaxUserCount) {
     return X_E_NO_SUCH_USER;
@@ -123,14 +133,32 @@ X_HRESULT_result_t XamUserGetSigninInfo_entry(
   const auto& user_profile =
       kernel_state()->xam_state()->GetUserProfile(user_index);
 
-  xe::string_util::copy_truncating(info->name, user_profile->name(),
-                                   xe::countof(info->name));
+  xe::string_util::copy_truncating(info_ptr->name, user_profile->name(),
+                                   xe::countof(info_ptr->name));
 
-  if (!flags || flags & X_USER_GET_SIGNIN_INFO_OFFLINE_XUID_ONLY) {
-    info->xuid = user_profile->xuid();
+  if (user_profile->IsLiveEnabled()) {
+    info_ptr->flags |= X_USER_INFO_FLAG_LIVE_ENABLED;
   }
 
-  info->signin_state = user_profile->signin_state();
+  // Online XUID if connected to Xbox Live, otherwise offline XUID
+  // 434D0849, 4D5308AB pass XUID to XUserReadStats and XShowGamerCardUI
+  if (!flags) {
+    info_ptr->xuid = user_profile->GetLogonXUID();
+  }
+
+  // 415608CB joins systemlink session twice
+  if (flags & X_USER_GET_SIGNIN_INFO_OFFLINE_XUID_ONLY) {
+    info_ptr->xuid = user_profile->xuid();
+  }
+
+  // If (X_USER_GET_SIGNIN_INFO_OFFLINE_XUID_ONLY |
+  // X_USER_GET_SIGNIN_INFO_ONLINE_XUID_ONLY) are provided return online XUID
+  if (flags & X_USER_GET_SIGNIN_INFO_ONLINE_XUID_ONLY) {
+    info_ptr->xuid = user_profile->GetOnlineXUID();
+  }
+
+  info_ptr->signin_state = static_cast<uint32_t>(user_profile->signin_state());
+
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamUserGetSigninInfo, kUserProfiles, kImplemented);
@@ -212,12 +240,26 @@ uint32_t XamUserReadProfileSettingsEx(
     return X_ERROR_INVALID_PARAMETER;
   }
 
+  // Dashboard expects settings in order use vector to ensure insertion order
+  // is maintained.
+  const std::vector<uint32_t> settings_ids = {setting_ids,
+                                              setting_ids + setting_count};
+
+  // 454D07D2 reads settings from multiple XUIDs.
+  const std::vector<uint64_t> profile_xuids = {xuids, xuids + xuid_count};
+
   uint32_t needed_header_size = 0;
   uint32_t needed_data_size = 0;
-  for (uint32_t i = 0; i < setting_count; ++i) {
+  for (const uint32_t setting_id : settings_ids) {
+    if (!UserSetting::is_setting_valid(setting_id)) {
+      if (!setting_id) {
+        XELOGE("{} requested unknown setting {:08X}", __func__, setting_id);
+        continue;
+      }
+    }
+
     needed_header_size += sizeof(X_USER_PROFILE_SETTING);
-    AttributeKey setting_key;
-    setting_key.value = static_cast<uint32_t>(setting_ids[i]);
+    AttributeKey setting_key = {.value = setting_id};
     switch (static_cast<X_USER_DATA_TYPE>(setting_key.type)) {
       case X_USER_DATA_TYPE::WSTRING:
       case X_USER_DATA_TYPE::BINARY:
@@ -253,70 +295,236 @@ uint32_t XamUserReadProfileSettingsEx(
     }
 
     if (xuids) {
-      uint64_t user_xuid = static_cast<uint64_t>(xuids[0]);
-      if (!kernel_state()->xam_state()->IsUserSignedIn(user_xuid)) {
-        extended_error = X_E_NO_SUCH_USER;
-        return X_ERROR_FUNCTION_FAILED;
+      for (const auto xuid : profile_xuids) {
+        if (IsOnlineXUID(xuid) &&
+            !kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+          extended_error = X_ONLINE_E_USER_NOT_LOGGED_ON;
+          return X_ERROR_FUNCTION_FAILED;
+        }
       }
-      user_profile = kernel_state()->xam_state()->GetUserProfile(user_xuid);
     }
 
-    if (!user_profile) {
-      extended_error = X_E_NO_SUCH_USER;
-      return X_ERROR_FUNCTION_FAILED;
+    // 455607DB uses invalid setting IDs
+    auto valid_requested_settings_view =
+        settings_ids | std::views::filter([](uint32_t setting_id) {
+          return UserSetting::is_setting_valid(setting_id);
+        }) |
+        std::views::transform(
+            [](uint32_t id) { return static_cast<xam::UserSettingId>(id); });
+
+    const std::vector<xam::UserSettingId> valid_requested_settings_ids(
+        valid_requested_settings_view.begin(),
+        valid_requested_settings_view.end());
+
+    user_settings_map remote_user_settings = {};
+    user_settings_map local_user_settings = {};
+
+    const uint32_t titleId = title_id ? title_id : kernel_state()->title_id();
+
+    std::vector<uint64_t> total_profile_xuids = profile_xuids;
+
+    // We split the settings into their respective title ids for lookup,
+    // therefore we lose the setting ids order!
+    const auto GetLocalUserSettings = [valid_requested_settings_ids,
+                                       titleId](UserProfile* user_profile) {
+      std::map<uint32_t, std::vector<xam::UserSetting>> title_settings = {};
+
+      if (!user_profile) {
+        return title_settings;
+      }
+
+      for (const xam::UserSettingId setting_id : valid_requested_settings_ids) {
+        const uint32_t setting_id_val = static_cast<uint32_t>(setting_id);
+        uint32_t setting_title_id = titleId;
+
+        // If setting is not title specific then assume it belongs to the
+        // dashboard.
+        if (!xam::UserSetting::is_title_specific(
+                static_cast<uint32_t>(setting_id_val))) {
+          setting_title_id = kDashboardID;
+        }
+
+        const auto user_setting =
+            kernel_state()->xam_state()->user_tracker()->GetSetting(
+                user_profile, setting_title_id,
+                static_cast<uint32_t>(setting_id_val));
+
+        if (user_setting.has_value()) {
+          title_settings[setting_title_id].push_back(user_setting.value());
+        }
+      }
+
+      return title_settings;
+    };
+
+    if (!profile_xuids.empty()) {
+      user_settingids_map remote_user_setting_ids = {};
+
+      for (const uint64_t xuid : profile_xuids) {
+        if (!kernel_state()->xam_state()->IsUserSignedIn(xuid) &&
+            IsOnlineXUID(xuid)) {
+          for (const xam::UserSettingId settings_id :
+               valid_requested_settings_ids) {
+            uint32_t setting_title_id = titleId;
+
+            // If setting is not title specific then assume it belongs to the
+            // dashboard.
+            if (!xam::UserSetting::is_title_specific(
+                    static_cast<uint32_t>(settings_id))) {
+              setting_title_id = kDashboardID;
+            }
+
+            remote_user_setting_ids[xuid][setting_title_id].push_back(
+                settings_id);
+          }
+        } else {
+          const auto user_profile =
+              kernel_state()->xam_state()->GetUserProfileAny(xuid);
+
+          const auto settings = GetLocalUserSettings(user_profile);
+
+          if (user_profile) {
+            local_user_settings[xuid] = settings;
+          }
+        }
+      }
+
+      if (!remote_user_setting_ids.empty()) {
+        remote_user_settings =
+            kernel_state()->GetXboxLiveAPI()->GetUsersSettings(
+                remote_user_setting_ids);
+      }
+    } else {
+      const auto user_profile =
+          kernel_state()->xam_state()->GetUserProfile(user_index);
+
+      const auto settings = GetLocalUserSettings(user_profile);
+
+      if (user_profile) {
+        total_profile_xuids.push_back(user_profile->xuid());
+        local_user_settings[user_profile->xuid()] = settings;
+      }
     }
 
-    auto out_header = reinterpret_cast<X_USER_READ_PROFILE_SETTINGS*>(buffer);
-    auto out_setting =
-        reinterpret_cast<X_USER_PROFILE_SETTING*>(&out_header[1]);
-    out_header->setting_count = static_cast<uint32_t>(setting_count);
-    out_header->settings_ptr =
-        kernel_state()->memory()->HostToGuestVirtual(out_setting);
+    // 58411442 expects the settings to be in contiguous memory.
+    //
+    // Memory Layout:
+    // X_USER_READ_PROFILE_SETTINGS
+    // X_USER_PROFILE_SETTING[valid_requested_settings_ids * xuid_count]
+    // X_USER_PROFILE_SETTING::data[]
+
+    // The order of xuids isn't preserved.
+    user_settings_map users_settings = local_user_settings;
+    users_settings.merge(remote_user_settings);
+
+    std::memset(buffer, 0, buffer_size);
+
+    X_USER_READ_PROFILE_SETTINGS* profile_settings_results_ptr =
+        reinterpret_cast<X_USER_READ_PROFILE_SETTINGS*>(buffer);
+
+    X_USER_PROFILE_SETTING* profile_settings_ptr =
+        reinterpret_cast<X_USER_PROFILE_SETTING*>(profile_settings_results_ptr +
+                                                  1);
+
+    const uint32_t total_settings_count = static_cast<uint32_t>(
+        total_profile_xuids.size() * valid_requested_settings_ids.size());
+
+    uint8_t* additional_data_ptr =
+        reinterpret_cast<uint8_t*>(profile_settings_ptr + total_settings_count);
 
     uint32_t additional_data_buffer_ptr =
-        out_header->settings_ptr +
-        (setting_count * sizeof(X_USER_PROFILE_SETTING));
+        kernel_state()->memory()->HostToGuestVirtual(
+            std::to_address(additional_data_ptr));
 
-    std::fill_n(out_setting, setting_count, X_USER_PROFILE_SETTING{});
+    profile_settings_results_ptr->setting_count =
+        static_cast<uint32_t>(valid_requested_settings_ids.size());
+    profile_settings_results_ptr->settings_ptr =
+        kernel_state()->memory()->HostToGuestVirtual(
+            std::to_address(profile_settings_ptr));
 
-    for (uint32_t n = 0; n < setting_count; ++n) {
-      const uint32_t setting_id = setting_ids[n];
-      if (!UserSetting::is_setting_valid(setting_id)) {
-        if (setting_id != 0) {
-          XELOGE(
-              "xeXamUserReadProfileSettingsEx requested unimplemented setting "
-              "{:08X}",
-              setting_id);
+    uint32_t setting_index = 0;
+
+    // Maintain XUIDs and setting ids order.
+    for (const uint64_t xuid : total_profile_xuids) {
+      // Maintain requested settings id order.
+      for (const xam::UserSettingId setting_id : valid_requested_settings_ids) {
+        X_USER_PROFILE_SETTING& profile_setting =
+            profile_settings_ptr[setting_index];
+
+        const uint32_t setting_id_val = static_cast<uint32_t>(setting_id);
+        uint32_t setting_title_id = titleId;
+
+        // If setting is not title specific then assume it belongs to the
+        // dashboard.
+        if (!xam::UserSetting::is_title_specific(
+                static_cast<uint32_t>(setting_id_val))) {
+          setting_title_id = kDashboardID;
         }
-        --out_header->setting_count;
-        continue;
-      }
 
-      const bool is_valid =
-          kernel_state()->xam_state()->user_tracker()->GetUserSetting(
-              user_profile->xuid(),
-              title_id ? title_id : kernel_state()->title_id(), setting_id,
-              out_setting, additional_data_buffer_ptr);
+        std::vector<xam::UserSetting> settings = {};
 
-      if (is_valid) {
+        if (users_settings.contains(xuid)) {
+          if (users_settings.at(xuid).contains(setting_title_id)) {
+            settings = users_settings.at(xuid).at(setting_title_id);
+          }
+        }
+
+        if (settings.empty()) {
+          assert_always();
+
+          XELOGI(fmt::format(
+              "XamUserReadProfileSettingsEx: {:08X}: {:08X} not found!",
+              setting_title_id, setting_id_val));
+          continue;
+        }
+
+        auto it =
+            std::find_if(settings.cbegin(), settings.cend(),
+                         [&setting_id_val](xam::UserSetting setting) {
+                           return setting_id_val == setting.get_setting_id();
+                         });
+
+        if (it == settings.cend()) {
+          assert_always();
+
+          XELOGI(fmt::format(
+              "XamUserReadProfileSettingsEx: {:08X}: {:08X} not found!",
+              setting_title_id, setting_id_val));
+          continue;
+        }
+
+        xam::UserSetting setting = *it;
+
+        profile_setting.setting_id = setting.get_setting_id();
+        profile_setting.source = setting.get_setting_source();
+
+        if (setting.requires_additional_data()) {
+          profile_setting.data.data.binary.ptr =
+              kernel_state()->memory()->HostToGuestVirtual(
+                  std::addressof(additional_data_ptr));
+        }
+
+        setting.WriteToGuest(&profile_setting, additional_data_buffer_ptr);
+
         if (xuids) {
-          out_setting->xuid = user_profile->xuid();
+          profile_setting.xuid = xuid;
         } else {
-          out_setting->xuid = -1;
-          out_setting->user_index = user_index;
+          profile_setting.user_index = user_index;
         }
+
+        setting_index++;
       }
-      ++out_setting;
     }
 
-    extended_error = X_HRESULT_FROM_WIN32(X_STATUS_SUCCESS);
-    length = 0;
-    return X_STATUS_SUCCESS;
+    return X_ERROR_SUCCESS;
   };
 
   if (!overlapped_ptr) {
     uint32_t extended_error, length;
-    return run(extended_error, length);
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                     : X_ERROR_FUNCTION_FAILED;
   }
 
   kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
@@ -405,15 +613,19 @@ DECLARE_XAM_EXPORT1(XamUserWriteProfileSettings, kUserProfiles, kImplemented);
 
 dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t mask,
                                            lpdword_t out_value) {
+  // 41560855 - XUserGetAccountInfoCheck
+  // XPRIVILEGE_PII_ACCESS == 221
+
+  *out_value = 0;
+
   if (user_index == XUserIndexAny) {
     for (uint8_t i = 0; i < XUserMaxUserCount; ++i) {
       const auto result = XamUserCheckPrivilege_entry(i, mask, out_value);
       if (result != X_ERROR_NO_SUCH_USER) {
-        *out_value = 0;
         return result;
       }
     }
-    *out_value = 0;
+
     return X_ERROR_NO_SUCH_USER;
   }
 
@@ -425,14 +637,17 @@ dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t mask,
     return X_ERROR_NO_SUCH_USER;
   }
 
-  if (kernel_state()->xam_state()->GetUserProfile(user_index)->signin_state() !=
-      static_cast<uint32_t>(SignInState::SignedInToLive)) {
-    *out_value = 0;
+  if (!kernel_state()
+           ->xam_state()
+           ->GetUserProfile(user_index)
+           ->IsSignedInToLive()) {
     return X_ERROR_NOT_LOGGED_ON;
   }
 
-  // If we deny everything, games should hopefully not try to do stuff.
-  *out_value = 0;
+  // Check Permissions settings in Dashboard GPD?
+
+  // Allow all privileges including multiplayer.
+  *out_value = 1;
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamUserCheckPrivilege, kUserProfiles, kStub);
@@ -514,7 +729,7 @@ dword_result_t XamUserGetMembershipTier_entry(dword_t user_index) {
 DECLARE_XAM_EXPORT1(XamUserGetMembershipTier, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetMembershipTierFromXUID_entry(qword_t xuid) {
-  const auto profile = kernel_state()->xam_state()->GetUserProfile(xuid);
+  const auto profile = kernel_state()->xam_state()->GetUserProfileAny(xuid);
   if (!profile) {
     return X_XAMACCOUNTINFO::AccountSubscriptionTier::kSubscriptionTierNone;
   }
@@ -544,13 +759,22 @@ dword_result_t XamUserAreUsersFriends_entry(
       const auto& user_profile =
           kernel_state()->xam_state()->GetUserProfile(user_index);
 
-      // Check if we are signed into live
-      if (user_profile->signin_state() != 2) {
+      if (!user_profile->IsSignedInToLive()) {
         result = X_ERROR_NOT_LOGGED_ON;
       } else {
-        // No friends!
-        are_friends = true;
-        result = X_ERROR_SUCCESS;
+        uint32_t friends_count = 0;
+
+        for (uint32_t i = 0; i < xuids_count; i++) {
+          // xuid is 0 sometimes?
+          uint64_t xuid = xuids_ptr[i];
+
+          if (kernel_state()->friends_manager()->IsFriend(user_profile->xuid(),
+                                                          xuid)) {
+            friends_count++;
+          }
+        }
+
+        are_friends = friends_count == xuids_count;
       }
     } else {
       result = X_ERROR_NO_SUCH_USER;
@@ -564,7 +788,7 @@ dword_result_t XamUserAreUsersFriends_entry(
         result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED,
         X_HRESULT_FROM_WIN32(result), are_friends);
 
-    return X_ERROR_SUCCESS;
+    return X_ERROR_IO_PENDING;
   }
 
   if (!overlapped_ptr && are_friends_ptr) {
@@ -573,7 +797,107 @@ dword_result_t XamUserAreUsersFriends_entry(
 
   return result;
 }
-DECLARE_XAM_EXPORT1(XamUserAreUsersFriends, kUserProfiles, kSketchy);
+DECLARE_XAM_EXPORT1(XamUserAreUsersFriends, kUserProfiles, kImplemented);
+
+dword_result_t XamUserGetAgeGroup_entry(
+    dword_t user_index, lpdword_t age_group_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  uint32_t result = X_ERROR_SUCCESS;
+
+  if (!age_group_ptr) {
+    result = X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+    result = X_ERROR_NO_SUCH_USER;
+  }
+
+  if (result) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  auto run = [user_index, age_group_ptr](uint32_t& extended_error,
+                                         uint32_t& length) -> X_RESULT {
+    X_RESULT result = X_ERROR_SUCCESS;
+
+    if (!kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+      result = X_ERROR_NO_SUCH_USER;
+    }
+
+    if (!result) {
+      *age_group_ptr = X_USER_AGE_GROUP::ADULT;
+    }
+
+    extended_error = X_HRESULT_FROM_WIN32(result);
+    length = 0;
+
+    return result;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                     : X_ERROR_FUNCTION_FAILED;
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamUserGetAgeGroup, kUserProfiles, kImplemented);
+
+// 454109D0
+dword_result_t XamUserGetAge_entry(dword_t user_index, lpdword_t age_ptr,
+                                   pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  uint32_t result = X_ERROR_SUCCESS;
+
+  if (!age_ptr) {
+    result = X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+    result = X_ERROR_NO_SUCH_USER;
+  }
+
+  if (!xboxkrnl::XexCheckExecutablePrivilege(XEX_PRIVILEGE_PII_ACCESS)) {
+    result = X_ONLINE_E_ACCESS_DENIED;
+  }
+
+  if (result) {
+    result = X_ERROR_FUNCTION_FAILED;
+  }
+
+  auto run = [user_index, age_ptr](uint32_t& extended_error,
+                                   uint32_t& length) -> X_RESULT {
+    X_RESULT result = X_ERROR_SUCCESS;
+
+    if (!kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+      result = X_ERROR_NO_SUCH_USER;
+    }
+
+    if (!result) {
+      *age_ptr = 0;
+    }
+
+    extended_error = X_HRESULT_FROM_WIN32(result);
+    length = 0;
+
+    return result;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                     : X_ERROR_FUNCTION_FAILED;
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamUserGetAge, kUserProfiles, kImplemented);
 
 dword_result_t XamUserCreateAchievementEnumerator_entry(
     dword_t title_id, dword_t user_index, qword_t xuid, dword_t flags,
@@ -607,7 +931,9 @@ dword_result_t XamUserCreateAchievementEnumerator_entry(
   }
 
   uint64_t requester_xuid = user->xuid();
-  if (xuid) {
+
+  // 58410B63 and 4D530860 use online XUID for local signed-in user
+  if (xuid && user->GetOnlineXUID() != xuid) {
     requester_xuid = xuid;
   }
 
@@ -692,7 +1018,7 @@ dword_result_t XamReadTile_entry(dword_t tile_type, dword_t title_id,
                                  pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
   if (!user) {
-    user = kernel_state()->xam_state()->GetUserProfile(item_id);
+    user = kernel_state()->xam_state()->GetUserProfileAny(item_id);
     if (!user) {
       return X_ERROR_INVALID_PARAMETER;
     }
@@ -780,6 +1106,8 @@ dword_result_t XamParseGamerTileKey_entry(pointer_t<X_USER_DATA> key_ptr,
       std::all_of(tile_key.cbegin(), tile_key.cend(),
                   [](unsigned char c) { return std::isxdigit(c); });
 
+  // If there's no valid key then set a default one?
+
   if (!is_valid_hex_string) {
     return X_ERROR_INVALID_PARAMETER;
   }
@@ -799,56 +1127,145 @@ dword_result_t XamParseGamerTileKey_entry(pointer_t<X_USER_DATA> key_ptr,
     *small_tile_id_ptr = gamer_picture_key->GetSmallTileId();
   }
 
-  bool is_from_dash = false;
-  bool is_avatar = false;
-  bool is_custom = false;
-
   if (title_id_ptr) {
-    is_from_dash = IsGamerPictureFromDash(*title_id_ptr);
-    is_avatar = IsGamerPictureAvatar(*title_id_ptr);
-    is_custom = IsGamerPictureCustom(*title_id_ptr);
+    if (IsGamerPictureKeySet(*title_id_ptr)) {
+      // Set default gamer picture key?
+    }
   }
 
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamParseGamerTileKey, kUserProfiles, kImplemented);
 
-dword_result_t XamReadTileToTexture_entry(dword_t tile_type, dword_t title_id,
-                                          qword_t tile_id, dword_t user_index,
-                                          lpvoid_t buffer_ptr, dword_t stride,
-                                          dword_t tile_height,
-                                          dword_t overlapped_ptr) {
+dword_result_t XamReadTileToTextureEx_entry(
+    dword_t tile_type, dword_t title_id, qword_t tile_id, dword_t user_index,
+    dword_t fsmall, pointer_t<X_USER_DATA> key_ptr, lpvoid_t buffer_ptr,
+    dword_t stride, dword_t tile_height, dword_t overlapped_ptr) {
   if (!buffer_ptr) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
   auto run = [=](uint32_t& extended_error, uint32_t& length) {
-    size_t buffer_size = size_t(stride) * size_t(tile_height);
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
 
-    auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
-    if (!user) {
+    XTileType xtile_type = static_cast<XTileType>(tile_type.value());
+
+    // 5454084E
+    size_t valid_tile_height = std::min<uint32_t>(64, tile_height);
+
+    assert_false(tile_height > 64);
+
+    if (fsmall) {
+      valid_tile_height = std::min<uint32_t>(32, tile_height);
+    }
+
+    const size_t buffer_size = size_t(stride) * valid_tile_height;
+
+    std::vector<uint8_t> gamerpic_icon = {};
+
+    // 5454084E
+    if (user_index == -1) {
       extended_error = X_E_NO_SUCH_USER;
       return X_ERROR_FUNCTION_FAILED;
     }
 
-    std::span<const uint8_t> tile =
-        kernel_state()->xam_state()->user_tracker()->GetIcon(
-            user->xuid(), title_id, static_cast<XTileType>(tile_type.value()),
-            tile_id);
+    // Local user
+    if (user_index < XUserMaxUserCount) {
+      auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+      if (!user) {
+        // 5841091E expects failure
+        extended_error = X_E_NO_SUCH_USER;
+        return X_ERROR_FUNCTION_FAILED;
+      }
 
-    if (tile.empty()) {
+      if (IsGamerPictureAvatar(title_id)) {
+        if (fsmall) {
+          xtile_type = XTileType::kAvatarGamerTileSmall;
+        } else {
+          xtile_type = XTileType::kAvatarGamerTile;
+        }
+      } else {
+        // 434D0849
+        if (fsmall) {
+          xtile_type = XTileType::kGamerTileSmall;
+        }
+      }
+
+      const auto tile_icon =
+          kernel_state()->xam_state()->user_tracker()->GetIcon(
+              user->xuid(), title_id, xtile_type, tile_id);
+
+      if (!tile_icon.empty()) {
+        gamerpic_icon.assign(tile_icon.begin(), tile_icon.end());
+      } else {
+        // Profile does not have a gamerpic.
+      }
+    } else if (user_index == XUserIndexNone) {
+      // Remote user
+
+      xe::be<uint32_t> title_id_ = 0;
+      xe::be<uint32_t> big_tile_id = 0;
+      xe::be<uint32_t> small_tile_id = 0;
+
+      if (key_ptr) {
+        // XamReadTileToTextureEx
+        XamParseGamerTileKey_entry(key_ptr, &title_id_.value,
+                                   &big_tile_id.value, &small_tile_id.value);
+      } else {
+        // XamReadTileToTexture
+        // 534507D4 - Doesn't redirect to Ex version even with supported XAM.
+        title_id_ = title_id.value();
+        big_tile_id = static_cast<uint32_t>(tile_id);
+      }
+
+      const uint32_t gamerpic_id = fsmall ? small_tile_id : big_tile_id;
+
+      if (!IsGamerPictureAvatar(title_id_) &&
+          !IsGamerPictureCustom(title_id_)) {
+        const auto gamerpic_data =
+            kernel_state()->GetXboxLiveAPI()->GetCachedGamerpic(gamerpic_id);
+
+        if (gamerpic_data.has_value()) {
+          gamerpic_icon = gamerpic_data.value();
+        } else {
+          gamerpic_icon =
+              kernel_state()->GetXboxLiveAPI()->DownloadGamerpicTile(
+                  title_id_, gamerpic_id);
+
+          if (!gamerpic_icon.empty()) {
+            kernel_state()->GetXboxLiveAPI()->AddCachedGamerpic(gamerpic_id,
+                                                                gamerpic_icon);
+          }
+        }
+      } else {
+        // We do not support avatar or custom gamerpics.
+        // If remote user is local we still cannot provide gamerpic as we would
+        // need to determine the user profile from the gamerpic key.
+      }
+    }
+
+    std::fill_n(reinterpret_cast<uint8_t*>(buffer_ptr.host_address()),
+                buffer_size, 0);
+
+    if (gamerpic_icon.empty()) {
+      std::span<uint8_t> black_texture = std::span<uint8_t>(
+          reinterpret_cast<uint8_t*>(buffer_ptr.host_address()), buffer_size);
+
+      // Create a solid black texture
+      uint32_t count = 0;
+      std::generate(black_texture.begin(), black_texture.end(),
+                    [&count]() { return (count++ % 4 == 0) ? 0xFF : 0x00; });
+
       return X_ERROR_SUCCESS;
     }
 
     int width, height, channels;
-    unsigned char* imageData =
-        stbi_load_from_memory(tile.data(), static_cast<int>(tile.size()),
-                              &width, &height, &channels, STBI_rgb_alpha);
+    unsigned char* imageData = stbi_load_from_memory(
+        gamerpic_icon.data(), static_cast<int>(gamerpic_icon.size()), &width,
+        &height, &channels, STBI_rgb_alpha);
 
-    size_t icon_dimmension_size = width * height;
-    std::fill_n(reinterpret_cast<uint8_t*>(buffer_ptr.host_address()),
-                icon_dimmension_size * sizeof(uint32_t), 0);
-
+    const size_t icon_dimmension_size = size_t(width) * size_t(height);
     for (int i = 0; i < icon_dimmension_size; i++) {
       unsigned char* pixel = &imageData[i * sizeof(uint32_t)];
 
@@ -861,25 +1278,52 @@ dword_result_t XamReadTileToTexture_entry(dword_t tile_type, dword_t title_id,
       std::swap(pixel[2], pixel[3]);
     }
 
-    memcpy(buffer_ptr, imageData,
-           std::min(buffer_size, static_cast<size_t>(icon_dimmension_size *
-                                                     sizeof(uint32_t))));
+    const size_t row_size_bytes = width * sizeof(uint32_t);
+    std::vector<uint8_t> final_tile(buffer_size, 0);
+
+    /*
+     Process image rows to include stride padding
+
+     Row (32px) = 128 Bytes
+     Stride = 256 Bytes
+     Padding Bytes = Stride - Row
+    */
+    for (int y = 0; y < height; ++y) {
+      const unsigned char* src_row_start = &imageData[y * row_size_bytes];
+      uint8_t* dest_row_start = final_tile.data() + (y * stride);
+
+      memcpy(dest_row_start, src_row_start, row_size_bytes);
+    }
+
+    memcpy(buffer_ptr, final_tile.data(), buffer_size);
 
     stbi_image_free(imageData);
 
     return X_ERROR_SUCCESS;
   };
 
-  if (overlapped_ptr) {
-    kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
-    return X_ERROR_IO_PENDING;
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+
+    return result;
   }
 
-  uint32_t extended_error, length;
-  auto result = run(extended_error, length);
-  return XSUCCEEDED(result) ? result : extended_error;
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
 }
-DECLARE_XAM_EXPORT1(XamReadTileToTexture, kUserProfiles, kStub);
+DECLARE_XAM_EXPORT1(XamReadTileToTextureEx, kUserProfiles, kSketchy);
+
+dword_result_t XamReadTileToTexture_entry(dword_t tile_type, dword_t title_id,
+                                          qword_t tile_id, dword_t user_index,
+                                          lpvoid_t buffer_ptr, dword_t stride,
+                                          dword_t tile_height,
+                                          dword_t overlapped_ptr) {
+  return XamReadTileToTextureEx_entry(tile_type, title_id, tile_id, user_index,
+                                      false, nullptr, buffer_ptr, stride,
+                                      tile_height, overlapped_ptr);
+}
+DECLARE_XAM_EXPORT1(XamReadTileToTexture, kUserProfiles, kSketchy);
 
 // Alias XUserAwardGamerPicture
 dword_result_t XamWriteGamerTile_entry(
@@ -982,20 +1426,30 @@ dword_result_t XamWriteGamerTile_entry(
 DECLARE_XAM_EXPORT1(XamWriteGamerTile, kUserProfiles, kSketchy);
 
 dword_result_t XamSessionCreateHandle_entry(lpdword_t handle_ptr) {
-  *handle_ptr = 0xCAFEDEAD;
+  auto e = object_ref<XSession>(new XSession(kernel_state()));
+  auto result = (uint32_t)e->Initialize();
+  if (XFAILED(result)) {
+    return result;
+  }
+
+  *handle_ptr = e->handle();
   return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamSessionCreateHandle, kUserProfiles, kStub);
+DECLARE_XAM_EXPORT1(XamSessionCreateHandle, kUserProfiles, kImplemented);
 
 dword_result_t XamSessionRefObjByHandle_entry(dword_t handle,
                                               lpdword_t obj_ptr) {
-  assert_true(handle == 0xCAFEDEAD);
-  // TODO(PermaNull): Implement this properly,
-  // For the time being returning 0xDEADF00D will prevent crashing.
-  *obj_ptr = 0xDEADF00D;
+  auto object = kernel_state()->object_table()->LookupObject<XSession>(handle);
+  if (!object) {
+    return X_STATUS_INVALID_HANDLE;
+  }
+
+  object->RetainHandle();
+
+  *obj_ptr = (uint32_t)object->guest_object();
   return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamSessionRefObjByHandle, kUserProfiles, kStub);
+DECLARE_XAM_EXPORT1(XamSessionRefObjByHandle, kUserProfiles, kImplemented);
 
 dword_result_t XamUserIsUnsafeProgrammingAllowed_entry(dword_t user_index,
                                                        dword_t unk,
@@ -1066,7 +1520,8 @@ dword_result_t XamUserGetUserFlags_entry(dword_t user_index) {
 DECLARE_XAM_EXPORT1(XamUserGetUserFlags, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetUserFlagsFromXUID_entry(qword_t xuid) {
-  const auto& user_profile = kernel_state()->xam_state()->GetUserProfile(xuid);
+  const auto& user_profile =
+      kernel_state()->xam_state()->GetUserProfileAny(xuid);
   if (!user_profile) {
     return 0;
   }
@@ -1076,7 +1531,7 @@ dword_result_t XamUserGetUserFlagsFromXUID_entry(qword_t xuid) {
 DECLARE_XAM_EXPORT1(XamUserGetUserFlagsFromXUID, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetOnlineLanguageFromXUID_entry(qword_t xuid) {
-  const auto& user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  const auto& user = kernel_state()->xam_state()->GetUserProfileAny(xuid);
   if (!user) {
     return kernel_state()->xconfig()->ReadSetting<uint32_t>(
         XCONFIG_USER_CATEGORY, XCONFIG_USER_LANGUAGE);
@@ -1087,7 +1542,7 @@ DECLARE_XAM_EXPORT1(XamUserGetOnlineLanguageFromXUID, kUserProfiles,
                     kImplemented);
 
 dword_result_t XamUserGetOnlineCountryFromXUID_entry(qword_t xuid) {
-  const auto& user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  const auto& user = kernel_state()->xam_state()->GetUserProfileAny(xuid);
   if (!user) {
     return kernel_state()->xconfig()->ReadSetting<uint8_t>(
         XCONFIG_USER_CATEGORY, XCONFIG_USER_COUNTRY);
@@ -1112,35 +1567,225 @@ dword_result_t XamUserIsParentalControlled_entry(dword_t user_index) {
 DECLARE_XAM_EXPORT1(XamUserIsParentalControlled, kUserProfiles, kImplemented);
 
 dword_result_t XamUserCreateStatsEnumerator_entry(
-    dword_t title_id, dword_t user_index, dword_t count, dword_t flags,
-    dword_t size, pointer_t<X_STATS_DETAILS> stats_ptr,
-    lpdword_t buffer_size_ptr, lpdword_t handle_ptr) {
-  if (!count || !buffer_size_ptr || !handle_ptr || !stats_ptr) {
+    dword_t title_id, dword_t enumerator_type, qword_t pivot_user,
+    dword_t num_rows, dword_t num_stats_specs,
+    pointer_t<X_USER_STATS_SPEC> stats_ptr, lpdword_t buffer_size_ptr,
+    lpdword_t handle_ptr) {
+  assert_false(enumerator_type > X_STATS_ENUMERATOR_TYPE::BY_RATING);
+
+  const uint32_t title_id_ =
+      title_id ? title_id.value() : kernel_state()->title_id();
+
+  if (!handle_ptr) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  if (user_index >= XUserMaxUserCount) {
+  *handle_ptr = 0;
+
+  if (!buffer_size_ptr) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  if (!flags || flags > 0x64) {
+  *buffer_size_ptr = 0;
+
+  if (!pivot_user || !stats_ptr) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  if (!size) {
+  if (!num_rows || num_rows > X_STATS_MAX_ROW_COUNT) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  if (buffer_size_ptr) {
-    *buffer_size_ptr = 0;  // sizeof(X_STATS_DETAILS) * stats_ptr->stats_amount;
+  if (!num_stats_specs) {
+    return X_ERROR_INVALID_PARAMETER;
   }
 
-  auto e = object_ref<XUserStatsEnumerator>(
-      new XUserStatsEnumerator(kernel_state(), 0));
-  const X_STATUS result = e->Initialize(user_index, 0xFB, 0xB0023, 0xB0024, 0);
+  if (enumerator_type > X_STATS_ENUMERATOR_TYPE::BY_RATING) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  const X_STATS_ENUMERATOR_TYPE type =
+      static_cast<X_STATS_ENUMERATOR_TYPE>(enumerator_type.value());
+
+  uint64_t xuid = 0;
+  uint32_t start_rank = 0;
+  uint64_t start_i64rating = 0;
+
+  switch (type) {
+    case X_STATS_ENUMERATOR_TYPE::XUID: {
+      xuid = pivot_user;
+      XELOGI("StatsEnumeratorByXUID: {:016X}", xuid);
+    } break;
+    case X_STATS_ENUMERATOR_TYPE::RANK: {
+      // 58410826 expects row ranks to start at rank_start.
+      start_rank = pivot_user & 0xFFFF;
+      XELOGI("StatsEnumeratorByRank at rank start {}", start_rank);
+    } break;
+    case X_STATS_ENUMERATOR_TYPE::RANK_PER_SPEC: {
+      start_rank = pivot_user & 0xFFFF;
+      XELOGI("StatsEnumeratorByRankPreSpec");
+    } break;
+    case X_STATS_ENUMERATOR_TYPE::BY_RATING: {
+      start_i64rating = pivot_user;
+      XELOGI("StatsEnumeratorByRating at i64Rating of {:016X}",
+             start_i64rating);
+    } break;
+  }
+
+  const uint32_t rows = num_rows;
+  const uint32_t extra_column_data = 4;  // Why extra 4 bytes per column?
+  const uint32_t column_size = sizeof(X_USER_STATS_COLUMN) + extra_column_data;
+
+  uint32_t buffer_size = num_stats_specs * (sizeof(X_USER_STATS_ROW) * rows +
+                                            sizeof(X_USER_STATS_VIEW)) +
+                         sizeof(X_USER_STATS_READ_RESULTS);
+
+  const X_USER_STATS_SPEC* stat_specs_ptr = stats_ptr;
+
+  for (size_t view_index = 0; view_index < num_stats_specs; view_index++) {
+    const X_USER_STATS_SPEC& stat_spec_ptr = stat_specs_ptr[view_index];
+    const uint32_t columns_count = stat_spec_ptr.num_column_ids;
+
+    buffer_size += column_size * rows * columns_count;
+  }
+
+  auto e = object_ref<XStaticUntypedEnumerator>(
+      new XStaticUntypedEnumerator(kernel_state(), 1, buffer_size));
+
+  const X_STATUS result =
+      e->Initialize(XUserIndexNone, 0xFB, 0xB0023, 0xB0024, 0);
+
   if (XFAILED(result)) {
     return result;
   }
+
+  // Do not add result to enumerator if we don't have any results.
+  // If we're not connected to Xbox-Live then we cannot retrieve results.
+  if (cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+    *buffer_size_ptr = buffer_size;
+    *handle_ptr = e->handle();
+    return X_ERROR_SUCCESS;
+  }
+
+  // Memory Layout:
+  // X_USER_STATS_READ_RESULTS
+  // X_USER_STATS_VIEW[]
+  // X_USER_STATS_ROW[]
+  // X_USER_STATS_COLUMN[]
+
+  // 4E4D07D1 expects result to create session.
+
+  const uint32_t results_address =
+      kernel_state()->memory()->SystemHeapAlloc(buffer_size);
+
+  X_USER_STATS_READ_RESULTS* results =
+      kernel_state()->memory()->TranslateVirtual<X_USER_STATS_READ_RESULTS*>(
+          results_address);
+
+  X_USER_STATS_VIEW* views_ptr =
+      reinterpret_cast<X_USER_STATS_VIEW*>(results + 1);
+
+  const uint32_t views_address =
+      kernel_memory()->HostToGuestVirtual(std::to_address(views_ptr));
+
+  X_USER_STATS_ROW* rows_ptr =
+      reinterpret_cast<X_USER_STATS_ROW*>(views_ptr + num_stats_specs);
+
+  results->num_views = num_stats_specs.value();
+  results->views_ptr = views_address;
+
+  for (size_t view_index = 0; view_index < num_stats_specs; view_index++) {
+    const X_USER_STATS_SPEC& stat_spec_ptr = stat_specs_ptr[view_index];
+
+    X_USER_STATS_VIEW& view_ptr = views_ptr[view_index];
+    const uint32_t view_id = stat_spec_ptr.view_id;
+    const uint32_t columns_count = stat_spec_ptr.num_column_ids;
+
+    const auto spa_stats_view =
+        kernel_state()->emulator()->game_info_database()->GetStatsView(view_id);
+
+    if (IsTrueSkillViewID(view_id)) {
+      XELOGI("TrueSkill View ID: {:08X}", view_id);
+    }
+
+    // 4B5607E8 expects view id otherwise crashes.
+    view_ptr.view_id = view_id;
+    view_ptr.total_view_rows = rows;
+
+    view_ptr.num_rows = rows;
+
+    const uint32_t rows_address =
+        kernel_memory()->HostToGuestVirtual(std::to_address(rows_ptr));
+
+    view_ptr.rows_ptr = rows_address;
+
+    X_USER_STATS_COLUMN* columns_ptr =
+        reinterpret_cast<X_USER_STATS_COLUMN*>(rows_ptr + rows);
+
+    for (uint32_t row_index = 0; row_index < rows; row_index++) {
+      X_USER_STATS_ROW& row_ptr = rows_ptr[row_index];
+
+      const uint32_t entry_count = row_index + 1;
+
+      // Dummy players
+      const std::string gamertag = fmt::format("Xenia User {}", entry_count);
+      xe::string_util::copy_truncating(row_ptr.gamertag, gamertag.c_str(),
+                                       sizeof(row_ptr.gamertag));
+
+      row_ptr.rank = entry_count;
+      row_ptr.i64Rating = entry_count;
+
+      row_ptr.xuid =
+          kernel_state()->xam_state()->profile_manager()->GenerateXuidOnline();
+
+      if (!stat_spec_ptr.num_column_ids) {
+        continue;
+      }
+
+      const uint32_t columns_address =
+          kernel_memory()->HostToGuestVirtual(std::to_address(columns_ptr));
+
+      row_ptr.num_columns = columns_count;
+      row_ptr.columns_ptr = columns_address;
+
+      for (size_t column_index = 0; column_index < columns_count;
+           column_index++) {
+        X_USER_STATS_COLUMN& column_ptr = columns_ptr[column_index];
+        const uint32_t column_id = stat_spec_ptr.column_ids[column_index];
+
+        column_ptr.column_id = column_id;
+        column_ptr.value.data = {};
+
+        // Determine the property type
+        if (IsTrueSkillViewID(view_id)) {
+          column_ptr.value.type = GetTrueSkillColumnType(column_ptr.column_id);
+        } else {
+          if (spa_stats_view.has_value()) {
+            for (const auto& column :
+                 spa_stats_view.value().shared_view.column_entries) {
+              if (column.attribute_id == column_id) {
+                column_ptr.value.type =
+                    xam::UserData::get_type(column.property_id);
+              }
+            }
+          } else {
+            column_ptr.value.type = xam::X_USER_DATA_TYPE::INT32;
+            assert_always();
+          }
+        }
+      }
+
+      columns_ptr += columns_count;
+    }
+
+    rows_ptr = reinterpret_cast<X_USER_STATS_ROW*>(columns_ptr + 1);
+  }
+
+  uint8_t* results_out_ptr = reinterpret_cast<uint8_t*>(e->AppendItem());
+
+  std::memcpy(results_out_ptr, results, buffer_size);
+
+  *buffer_size_ptr = buffer_size;
 
   *handle_ptr = e->handle();
   return X_ERROR_SUCCESS;
@@ -1274,6 +1919,11 @@ dword_result_t XamUserLogonEx_entry(pointer_t<X_PROFILEENUMRESULT> profile_ptr,
   }
 }
 DECLARE_XAM_EXPORT1(XamUserLogonEx, kUserProfiles, kSketchy);
+
+X_HRESULT_result_t XamUserValidateAvatarManifest_entry() {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamUserValidateAvatarManifest, kUserProfiles, kStub);
 
 }  // namespace xam
 }  // namespace kernel

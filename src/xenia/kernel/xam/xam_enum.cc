@@ -9,14 +9,13 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/xbox.h"
-
-#include "third_party/fmt/include/fmt/format.h"
 
 namespace xe {
 namespace kernel {
@@ -105,6 +104,102 @@ static uint32_t XMPCreateUserPlaylistEnumeratorHandle(
   return X_ERROR_SUCCESS;
 }
 
+// Enumerate security gateways
+static uint32_t XTitleServerCreateEnumerator(
+    uint32_t user_index, uint32_t app_id, uint32_t open_message,
+    uint32_t close_message, uint32_t extra_size, uint32_t item_count,
+    uint32_t flags, uint32_t& out_handle) {
+  if (item_count > X_TITLE_SERVER_MAX_LSP_INFO) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  auto e = make_object<XStaticEnumerator<X_TITLE_SERVER>>(kernel_state(),
+                                                          item_count);
+
+  auto result = e->Initialize(user_index, app_id, open_message, close_message,
+                              flags, extra_size, nullptr);
+
+  if (XFAILED(result)) {
+    return result;
+  }
+
+  const auto servers = kernel_state()->GetXboxLiveAPI()->GetServers();
+
+  for (const auto& server : servers) {
+    X_TITLE_SERVER* item = e->AppendItem();
+
+    *item = server;
+  }
+
+  XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
+
+  out_handle = e->handle();
+  return X_ERROR_SUCCESS;
+}
+
+static uint32_t XMarketplaceCreateOfferEnumerator(
+    uint32_t user_index, uint32_t app_id, uint32_t open_message,
+    uint32_t close_message, uint32_t extra_size, uint32_t item_count,
+    uint32_t flags, uint32_t& out_handle) {
+  auto e = make_object<XStaticEnumerator<X_MARKETPLACE_CONTENTOFFER_INFO>>(
+      kernel_state(), item_count);
+
+  auto result = e->Initialize(user_index, app_id, open_message, close_message,
+                              flags, extra_size, nullptr);
+
+  if (XFAILED(result)) {
+    return result;
+  }
+
+  std::vector<X_MARKETPLACE_CONTENTOFFER_INFO> content_offers = {};
+
+  for (const auto& content : content_offers) {
+    X_MARKETPLACE_CONTENTOFFER_INFO* item = e->AppendItem();
+
+    *item = content;
+  }
+
+  XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
+
+  out_handle = e->handle();
+  return X_ERROR_SUCCESS;
+}
+
+static uint32_t XMarketplaceCreateAssetEnumerator(
+    uint32_t user_index, uint32_t app_id, uint32_t open_message,
+    uint32_t close_message, uint32_t extra_size, uint32_t item_count,
+    uint32_t flags, uint32_t& out_handle) {
+  auto e = make_object<XStaticEnumerator<X_MARKETPLACE_ASSET_ENUMERATE_REPLY>>(
+      kernel_state(), item_count);
+
+  auto result = e->Initialize(user_index, app_id, open_message, close_message,
+                              flags, extra_size, nullptr);
+
+  if (XFAILED(result)) {
+    return result;
+  }
+
+  std::vector<X_MARKETPLACE_ASSET_ENUMERATE_REPLY> marketplace_assets = {};
+
+  for (const auto& asset : marketplace_assets) {
+    X_MARKETPLACE_ASSET_ENUMERATE_REPLY* item = e->AppendItem();
+
+    *item = asset;
+  }
+
+  XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
+
+  out_handle = e->handle();
+  return X_ERROR_SUCCESS;
+}
+
+// XMarketplaceCreateOfferEnumeratorByOffering ->
+// XMarketplaceCreateOfferEnumeratorEx
+
+constexpr uint32_t XTitleServerMessage = 0x58039;
+constexpr uint32_t XMarketplaceCreateOfferEnumeratorMessage = 0x58040;
+constexpr uint32_t XMarketplaceCreateOfferEnumeratorExMessage = 0x58040;
+constexpr uint32_t XMarketplaceCreateAssetEnumeratorMessage = 0x58042;
 constexpr uint32_t XMPCreateUserPlaylistEnumeratorMessage = 0x70026;
 
 dword_result_t XamCreateEnumeratorHandle_entry(
@@ -115,12 +210,35 @@ dword_result_t XamCreateEnumeratorHandle_entry(
   X_STATUS result = 0;
 
   switch (open_message) {
+    case XTitleServerMessage: {
+      result = XTitleServerCreateEnumerator(user_index, app_id, open_message,
+                                            close_message, extra_size,
+                                            item_count, flags, enum_handle);
+    } break;
     case XMPCreateUserPlaylistEnumeratorMessage: {
       result = XMPCreateUserPlaylistEnumeratorHandle(
           user_index, app_id, open_message, close_message, extra_size,
           item_count, flags, enum_handle);
     } break;
+    case XMarketplaceCreateOfferEnumeratorMessage: {
+      result = XMarketplaceCreateOfferEnumerator(
+          user_index, app_id, open_message, close_message, extra_size,
+          item_count, flags, enum_handle);
+    } break;
+    case XMarketplaceCreateAssetEnumeratorMessage: {
+      result = XMarketplaceCreateAssetEnumerator(
+          user_index, app_id, open_message, close_message, extra_size,
+          item_count, flags, enum_handle);
+    } break;
     default: {
+      std::string enumerator_log = fmt::format(
+          "Unimplemented XamCreateEnumeratorHandle app={:04X}, "
+          "open_message={:04X}, close_message={:04X}, flags={:04X}",
+          app_id.value(), open_message.value(), close_message.value(),
+          flags.value());
+
+      XELOGI(enumerator_log);
+
       auto e = object_ref<XStaticUntypedEnumerator>(
           new XStaticUntypedEnumerator(kernel_state(), item_count, extra_size));
 

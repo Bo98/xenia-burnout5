@@ -30,8 +30,20 @@ static_assert_size(XUSER_CONTEXT, 0x8);
 struct XUSER_PROPERTY {
   xe::be<uint32_t> property_id;
   X_USER_DATA data;
+
+  XUSER_PROPERTY(XUSER_PROPERTY& other)
+      : property_id(other.property_id), data(other.data) {};
+  XUSER_PROPERTY(const XUSER_PROPERTY& other)
+      : property_id(other.property_id), data(other.data) {};
 };
 static_assert_size(XUSER_PROPERTY, 0x18);
+
+struct XUSER_WEIGHTED_PROPERTY {
+  xe::be<uint32_t> property_id;
+  X_USER_DATA data;
+  xe::be<float> weight;
+};
+static_assert_size(XUSER_WEIGHTED_PROPERTY, 0x20);
 
 class Property : public UserData {
  public:
@@ -53,6 +65,12 @@ class Property : public UserData {
   bool IsContext() const { return data_.type == X_USER_DATA_TYPE::CONTEXT; }
   void WriteToGuest(XUSER_PROPERTY* property) const;
   std::vector<uint8_t> Serialize() const;
+  std::optional<std::string> SerializeToBase64() const;
+  static std::optional<Property> DeserializeBase64(const std::string base64);
+
+  bool operator==(const Property& other) const {
+    return data_ == other.data_ && extended_data_ == other.extended_data_;
+  }
 
  private:
   AttributeKey property_id_ = {};

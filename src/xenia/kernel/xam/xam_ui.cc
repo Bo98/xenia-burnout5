@@ -12,7 +12,10 @@
 #include "xenia/base/png_utils.h"
 #include "xenia/base/system.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/user_module.h"
+#include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -20,9 +23,13 @@
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/imgui_guest_notification.h"
+#include "xenia/ui/imgui_host_notification.h"
 
+#include "xenia/kernel/xam/ui/community_sessions_ui.h"
 #include "xenia/kernel/xam/ui/create_profile_ui.h"
+#include "xenia/kernel/xam/ui/friends_ui.h"
 #include "xenia/kernel/xam/ui/game_achievements_ui.h"
+#include "xenia/kernel/xam/ui/gamercard_from_xuid_ui.h"
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
 #include "xenia/kernel/xam/ui/passcode_ui.h"
 #include "xenia/kernel/xam/ui/signin_ui.h"
@@ -35,6 +42,10 @@ DEFINE_bool(storage_selection_dialog, false,
 DECLARE_int32(license_mask);
 
 constexpr std::chrono::milliseconds kUIDelayMillis(200);
+
+DECLARE_int32(network_mode);
+
+DECLARE_bool(upnp);
 
 namespace xe {
 namespace kernel {
@@ -620,14 +631,13 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index) {
 DECLARE_XAM_EXPORT1(XamShowDirtyDiscErrorUI, kUI, kImplemented);
 
 dword_result_t XamShowPartyUI_entry(dword_t user_index) {
+  if (!kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+
   return X_ERROR_FUNCTION_FAILED;
 }
 DECLARE_XAM_EXPORT1(XamShowPartyUI, kNone, kStub);
-
-dword_result_t XamShowCommunitySessionsUI_entry(unknown_t r3, unknown_t r4) {
-  return X_ERROR_FUNCTION_FAILED;
-}
-DECLARE_XAM_EXPORT1(XamShowCommunitySessionsUI, kNone, kStub);
 
 // this is supposed to do a lot more, calls another function that triggers some
 // cbs
@@ -912,6 +922,12 @@ bool xeDrawProfileContent(xe::ui::ImGuiDrawer* imgui_drawer,
       ImGui::TextUnformatted(
           fmt::format("User: {}\n", account->GetGamertagString()).c_str());
       ImGui::TextUnformatted(fmt::format("XUID: {:016X}  \n", xuid).c_str());
+
+      const std::string live_enabled = fmt::format(
+          "Xbox Live Enabled: {}", account->IsLiveEnabled() ? "True" : "False");
+
+      ImGui::TextUnformatted(live_enabled.c_str());
+
       if (user_index != XUserIndexAny) {
         ImGui::TextUnformatted(
             fmt::format("Assigned to slot: {}\n", user_index + 1).c_str());
@@ -942,6 +958,1157 @@ bool xeDrawProfileContent(xe::ui::ImGuiDrawer* imgui_drawer,
   }
 
   return true;
+}
+
+bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
+                         UserProfile* profile,
+                         std::shared_ptr<xe::ui::ImmediateTexture> icon_texture,
+                         const X_ONLINE_FRIEND& presence,
+                         uint64_t* selected_xuid_, uint64_t* removed_xuid_) {
+  if (icon_texture) {
+    ImGui::Image(reinterpret_cast<ImTextureID>(icon_texture.get()),
+                 xe::ui::default_image_icon_size);
+    ImGui::SameLine();
+  } else {
+    ImGui::Image(
+        reinterpret_cast<ImTextureID>(imgui_drawer->GetLoadingTileIcon()),
+        xe::ui::default_image_icon_size);
+    ImGui::SameLine();
+  }
+
+  ImVec2 start_drawing_position = ImGui::GetCursorPos();
+
+  ImGui::TextUnformatted(presence.Gamertag);
+
+  uint32_t index = 1;
+
+  const uint32_t title_id = presence.title_id.get();
+
+  if (title_id) {
+    ImGui::SameLine();
+    ImGui::SetCursorPos(start_drawing_position);
+    ImGui::SetCursorPosY(start_drawing_position.y + ImGui::GetTextLineHeight());
+
+    if (title_id == kernel_state()->title_id()) {
+      ImGui::TextUnformatted(
+          fmt::format("Game: {}", kernel_state()->emulator()->title_name())
+              .c_str());
+    } else {
+      ImGui::TextUnformatted(fmt::format("Title ID: {}", title_id).c_str());
+    }
+
+    index++;
+  }
+
+  ImGui::SameLine();
+  ImGui::SetCursorPos(start_drawing_position);
+  ImGui::SetCursorPosY(start_drawing_position.y +
+                       index * ImGui::GetTextLineHeight());
+
+  const uint64_t friend_xuid = presence.xuid.get();
+  const std::string friend_xuid_str = fmt::format("{:016X}", friend_xuid);
+
+  ImGui::TextUnformatted(
+      fmt::format("Online XUID: {:016X}\n", friend_xuid).c_str());
+  index++;
+
+  const std::u16string rich_presence = xe::string_util::read_u16string_and_swap(
+      reinterpret_cast<const char16_t*>(presence.wszRichPresence));
+
+  if (!rich_presence.empty()) {
+    ImGui::SameLine();
+    ImGui::SetCursorPos(start_drawing_position);
+    ImGui::SetCursorPosY(start_drawing_position.y +
+                         index * ImGui::GetTextLineHeight());
+
+    std::string presense_string =
+        xe::string_util::trim(xe::to_utf8(rich_presence));
+
+    presense_string =
+        std::regex_replace(presense_string, std::regex("\\n"), ", ");
+
+    ImGui::TextWrapped(fmt::format("Status: {}", presense_string).c_str());
+
+    index++;
+  }
+
+  const ImVec2 friend_info_drawing_end_position = ImGui::GetCursorPos();
+
+  ImGui::BeginGroup();
+
+  float btn_height = 25;
+  float btn_width = (ImGui::GetContentRegionAvail().x * 0.5f) -
+                    (ImGui::GetStyle().ItemSpacing.x * 0.5f);
+  ImVec2 half_width_btn = ImVec2(btn_width, btn_height);
+
+  bool are_friends =
+      kernel_state()->friends_manager()->IsFriend(profile->xuid(), friend_xuid);
+  bool is_self = profile->GetOnlineXUID() == presence.xuid.get();
+
+  const std::string join_label =
+      std::format("Join Session##{}", friend_xuid_str);
+
+  const std::string remove_label = std::format("Remove##{}", friend_xuid_str);
+
+  const std::string add_label = std::format("Add##{}", friend_xuid_str);
+
+  const bool same_title = title_id == kernel_state()->title_id();
+
+  if (!is_self) {
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(!presence.session_id.as_uint64() || !same_title);
+    if (ImGui::Button(join_label.c_str(), half_width_btn)) {
+      X_INVITE_INFO invite = {};
+
+      invite.xuid_invitee = profile->GetOnlineXUID();
+      invite.xuid_inviter = presence.xuid.get();
+      invite.title_id = kernel_state()->title_id();
+      invite.from_game_invite = false;
+
+      profile->SetSelfInvite(invite);
+
+      const uint32_t user_index =
+          kernel_state()->xam_state()->GetUserIndexAssignedToProfileFromXUID(
+              profile->xuid());
+
+      kernel_state()->BroadcastNotification(kXNotificationLiveInviteAccepted,
+                                            user_index);
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      if (kernel_state()->title_id() == 0 || title_id == 0 || same_title) {
+        ImGui::SetTooltip("Join gaming session");
+      } else {
+        ImGui::SetTooltip(
+            fmt::format("{} is playing a different game", presence.Gamertag)
+                .c_str());
+      }
+    }
+  }
+
+  ImGui::SameLine();
+
+  if (are_friends && !is_self) {
+    if (ImGui::Button(remove_label.c_str(), half_width_btn)) {
+      if (kernel_state()->friends_manager()->RemoveFriend(profile->xuid(),
+                                                          friend_xuid)) {
+        if (removed_xuid_) {
+          *removed_xuid_ = friend_xuid;
+        }
+
+        const std::string gamertag(presence.Gamertag);
+
+        std::string description = !gamertag.empty() ? gamertag : "Success";
+
+        kernel_state()
+            ->emulator()
+            ->display_window()
+            ->app_context()
+            .CallInUIThread([&]() {
+              new xe::ui::HostNotificationWindow(imgui_drawer, "Removed Friend",
+                                                 description, 0);
+            });
+      }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Remove Friend");
+    }
+  }
+
+  if (!are_friends && !is_self) {
+    if (ImGui::Button(add_label.c_str(), half_width_btn)) {
+      bool added = kernel_state()->friends_manager()->AddFriend(profile->xuid(),
+                                                                friend_xuid);
+
+      const std::string gamertag(presence.Gamertag);
+
+      std::string description = !gamertag.empty() ? gamertag : "Success";
+
+      if (!added) {
+        description = "Failed!";
+      }
+
+      kernel_state()
+          ->emulator()
+          ->display_window()
+          ->app_context()
+          .CallInUIThread([&]() {
+            new xe::ui::HostNotificationWindow(imgui_drawer, "Added Friend",
+                                               description, 0);
+          });
+    }
+
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Add Friend");
+    }
+  }
+  ImGui::EndGroup();
+
+  ImVec2 buttons_row_size = ImGui::GetItemRectSize();
+  ImVec2 drawing_end_position = ImGui::GetCursorPos();
+
+  if (selected_xuid_) {
+    ImGui::SetCursorPos(
+        ImVec2(start_drawing_position.x + 2, start_drawing_position.y));
+
+    const std::string selectable_label =
+        std::format("##Selectable{}", friend_xuid_str);
+    const std::string context_label =
+        std::format("Friend Menu##{}", friend_xuid_str);
+
+    auto selectable_area =
+        ImVec2(buttons_row_size.x - (xe::ui::default_image_icon_size.x + 14),
+               friend_info_drawing_end_position.y - start_drawing_position.y);
+
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(50, 100, 200, 50));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, IM_COL32(0, 0, 0, 0));
+    if (ImGui::Selectable(selectable_label.c_str(), false,
+                          ImGuiSelectableFlags_NoAutoClosePopups,
+                          selectable_area)) {
+      *selected_xuid_ = friend_xuid;
+    }
+    ImGui::PopStyleColor(2);
+
+    if (ImGui::BeginPopupContextItem(context_label.c_str())) {
+      if (ImGui::BeginMenu("Copy")) {
+        if (ImGui::MenuItem("Gamertag")) {
+          ImGui::SetClipboardText(presence.Gamertag);
+        }
+
+        ImGui::Separator();
+
+        if (ImGui::MenuItem("XUID Online")) {
+          ImGui::SetClipboardText(fmt::format("{:016X}", friend_xuid).c_str());
+        }
+
+        ImGui::EndMenu();
+      }
+      ImGui::EndPopup();
+    }
+
+    ImGui::SetCursorPos(drawing_end_position);
+  }
+
+  return true;
+}
+
+bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
+                     ui::AddFriendArgs& args) {
+  ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImVec2 center = viewport->GetCenter();
+
+  if (!args.add_friend_open) {
+    args.add_friend_first_draw = false;
+  }
+
+  float btn_height = 25;
+
+  ImGui::SetNextWindowContentSize(ImVec2(200, 0));
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Add Friend", &args.add_friend_open,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (!args.add_friend_context_open &&
+        ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::SetWindowFontScale(1.05f);
+
+    ImVec2 btn_size = ImVec2(ImGui::GetContentRegionAvail().x, btn_height);
+
+    bool max_friends = kernel_state()->friends_manager()->GetFriendsCount(
+                           profile->xuid()) >= X_ONLINE_MAX_FRIENDS;
+
+    if (max_friends) {
+      ImGui::Text("Max Friends Reached!");
+      ImGui::Separator();
+    } else if (args.are_friends) {
+      ImGui::Text("Friend Added!");
+      ImGui::Separator();
+    }
+
+    const std::string xuid_string = std::string(args.add_xuid_);
+
+    uint64_t xuid = 0;
+
+    if (xuid_string.length() == 16) {
+      if (xuid_string.starts_with("0009")) {
+        xuid = string_util::from_string<uint64_t>(xuid_string, true);
+
+        args.valid_xuid = IsOnlineXUID(xuid);
+        args.are_friends =
+            kernel_state()->friends_manager()->IsFriend(profile->xuid(), xuid);
+      }
+
+      if (!args.valid_xuid) {
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 50, 50, 255));
+        if (xuid_string.starts_with("E")) {
+          ImGui::Text("This is an offline XUID!");
+        } else {
+          ImGui::Text("Invalid XUID!");
+        }
+        ImGui::PopStyleColor();
+
+        ImGui::Separator();
+      }
+    } else {
+      args.valid_xuid = false;
+      args.are_friends = false;
+    }
+
+    ImGui::Text("Friend's Online XUID:");
+
+    ImGui::SameLine();
+
+    const float window_width = ImGui::GetContentRegionAvail().x;
+
+    const uint32_t friends_count =
+        kernel_state()->friends_manager()->GetFriendsCount(profile->xuid());
+
+    const std::string friends_total = fmt::format("{}/100", friends_count);
+
+    ImGui::SetCursorPosX((ImGui::GetCursorPosX() + window_width -
+                          ImGui::CalcTextSize(friends_total.c_str()).x));
+
+    ImGui::Text(friends_total.c_str());
+
+    if (!args.add_friend_first_draw && std::string(args.add_xuid_).empty()) {
+      args.add_friend_first_draw = true;
+      ImGui::SetKeyboardFocusHere();
+    }
+
+    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
+    ImGui::InputTextWithHint("##AddFriend", "0009XXXXXXXXXXXX", args.add_xuid_,
+                             sizeof(args.add_xuid_),
+                             ImGuiInputTextFlags_CharsHexadecimal |
+                                 ImGuiInputTextFlags_CharsUppercase);
+    ImGui::PopItemWidth();
+
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("Right Click/Gamepad A");
+    }
+
+    if (ImGui::IsItemFocused() &&
+        ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceDown, false)) {
+      ImGui::OpenPopup("##AddFriendContexts");
+    }
+
+    if (ImGui::BeginPopupContextItem("##AddFriendContexts")) {
+      args.add_friend_context_open = true;
+
+      if (ImGui::MenuItem("Paste")) {
+        const char* clipboard = ImGui::GetClipboardText();
+
+        if (clipboard) {
+          xe::string_util::copy_truncating(args.add_xuid_, clipboard,
+                                           sizeof(args.add_xuid_));
+        }
+      }
+
+      ImGui::Separator();
+
+      if (ImGui::MenuItem("Clear")) {
+        memset(args.add_xuid_, 0, sizeof(args.add_xuid_));
+      }
+
+      ImGui::EndPopup();
+    } else {
+      args.add_friend_context_open = false;
+    }
+
+    ImGui::BeginDisabled(!args.valid_xuid || args.are_friends || max_friends);
+    if (ImGui::Button("Add", btn_size)) {
+      args.added_friend =
+          kernel_state()->friends_manager()->AddFriend(profile->xuid(), xuid);
+
+      std::string desc = xuid_string;
+
+      if (!args.added_friend) {
+        desc = "Failed!";
+      }
+
+      kernel_state()
+          ->emulator()
+          ->display_window()
+          ->app_context()
+          .CallInUIThread([&]() {
+            new xe::ui::HostNotificationWindow(imgui_drawer, "Added Friend",
+                                               desc, 0);
+          });
+    }
+    ImGui::EndDisabled();
+
+    ImGui::EndPopup();
+  }
+
+  return true;
+}
+
+bool xeDrawFriendsContent(
+    xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
+    ui::FriendsContentArgs& args, std::vector<X_ONLINE_FRIEND>& presences,
+    std::map<uint64_t, std::shared_ptr<xe::ui::ImmediateTexture>>&
+        immediate_gamerpics) {
+  if (!profile) {
+    return false;
+  }
+
+  ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImVec2 center = viewport->GetCenter();
+
+  ImGui::SetNextWindowSizeConstraints(ImVec2(400, 205), ImVec2(400, 600));
+  ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Friends", &args.friends_open,
+                             ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    ImGui::SetWindowFontScale(1.05f);
+
+    if (!args.add_friend_args.add_friend_open &&
+        !args.add_friend_args.search_filter_context_open &&
+        ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      ImGui::CloseCurrentPopup();
+    }
+
+    const float window_width = ImGui::GetContentRegionAvail().x;
+
+    float btn_height = 25;
+    float btn_width =
+        (window_width * 0.5f) - (ImGui::GetStyle().ItemSpacing.x * 0.5f);
+    ImVec2 half_width_btn = ImVec2(btn_width, btn_height);
+
+    ImGui::Text("Search:");
+
+    if (args.first_draw) {
+      args.first_draw = false;
+      ImGui::SetKeyboardFocusHere();
+    }
+
+    ImVec2 search_pos_input_start = ImGui::GetCursorPos();
+
+    args.filter.Draw("##Search", window_width);
+
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Right Click/Gamepad A");
+    }
+
+    ImVec2 search_pos_input_end = ImGui::GetCursorPos();
+
+    if (ImGui::IsItemFocused() &&
+        ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceDown, false)) {
+      ImGui::OpenPopup("##SearchFilter");
+    }
+
+    if (ImGui::BeginPopupContextItem("##SearchFilter")) {
+      args.add_friend_args.search_filter_context_open = true;
+
+      if (ImGui::MenuItem("Paste")) {
+        const char* clipboard = ImGui::GetClipboardText();
+
+        if (clipboard) {
+          xe::string_util::copy_truncating(args.filter.InputBuf, clipboard,
+                                           sizeof(args.filter.InputBuf));
+
+          args.filter.Build();
+        }
+      }
+
+      ImGui::Separator();
+
+      if (ImGui::MenuItem("Clear")) {
+        memset(args.filter.InputBuf, 0, sizeof(args.filter.InputBuf));
+        args.filter.Build();
+      }
+
+      ImGui::EndPopup();
+    } else {
+      args.add_friend_args.search_filter_context_open = false;
+    }
+
+    if (std::string(args.filter.InputBuf).empty()) {
+      ImGui::SetCursorPos(ImVec2(search_pos_input_start.x + 4,
+                                 search_pos_input_start.y + 3.5f));
+      ImGui::TextDisabled("Gamertag or XUID...");
+    }
+
+    ImGui::SetCursorPos(search_pos_input_end);
+
+    const uint32_t friends_count =
+        kernel_state()->friends_manager()->GetFriendsCount(profile->xuid());
+
+    const std::string friends_total = fmt::format("{}/100", friends_count);
+
+    ImGui::SetCursorPosX((ImGui::GetCursorPosX() + window_width -
+                          ImGui::CalcTextSize(friends_total.c_str()).x));
+    ImGui::Text(friends_total.c_str());
+
+    ImGui::SetCursorPosY((ImGui::GetCursorPosY() - ImGui::GetTextLineHeight()) -
+                         4);
+
+    ImGui::Text("Filters:");
+
+    ImGui::Checkbox("Joinable", &args.filter_joinable);
+    ImGui::SameLine();
+    ImGui::Checkbox("Same Game", &args.filter_title);
+    ImGui::SameLine();
+    ImGui::Checkbox("Hide Offline", &args.filter_offline);
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Add Friend",
+                      ImVec2(ImGui::GetContentRegionAvail().x, btn_height))) {
+      args.add_friend_args.add_friend_open = true;
+      ImGui::OpenPopup("Add Friend");
+    }
+
+    ImGui::BeginDisabled(!friends_count);
+    if (ImGui::Button("Refresh", half_width_btn)) {
+      args.refresh_presence = true;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+
+    ImGui::BeginDisabled(!friends_count);
+    if (ImGui::Button("Remove All", half_width_btn)) {
+      ImGui::OpenPopup("Remove All Friends");
+    }
+    ImGui::EndDisabled();
+
+    xeDrawAddFriend(imgui_drawer, profile, args.add_friend_args);
+
+    if (args.add_friend_args.added_friend) {
+      args.refresh_presence = true;
+      args.add_friend_args.added_friend = false;
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    for (uint32_t index = 0; auto& presence : presences) {
+      bool filter_gamertags = args.filter.PassFilter(presence.Gamertag);
+      bool filter_xuid = args.filter.PassFilter(
+          fmt::format("{:016X}", presence.xuid.get()).c_str());
+
+      if (filter_gamertags || filter_xuid) {
+        if (profile->GetOnlineXUID() == presence.xuid.get()) {
+          continue;
+        }
+
+        const bool same_title =
+            presence.title_id.get() == kernel_state()->title_id();
+
+        if (args.filter_joinable &&
+            (!presence.session_id.as_uint64() || !same_title)) {
+          continue;
+        }
+
+        if (args.filter_title && !same_title) {
+          continue;
+        }
+
+        if (args.filter_offline &&
+            (!presence.state.get() || !IsValidXUID(presence.xuid.get()))) {
+          continue;
+        }
+
+        std::shared_ptr<xe::ui::ImmediateTexture> gamerpic = {};
+
+        if (immediate_gamerpics.contains(presence.xuid.get())) {
+          gamerpic = immediate_gamerpics.at(presence.xuid.get());
+        }
+
+        uint64_t selected_xuid_ = 0;
+        uint64_t removed_xuid_ = 0;
+        xeDrawFriendContent(imgui_drawer, profile, gamerpic, presence,
+                            &selected_xuid_, &removed_xuid_);
+
+        if (removed_xuid_) {
+          presences.erase(presences.begin() + index);
+          removed_xuid_ = 0;
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::Spacing();
+      }
+
+      index++;
+    }
+
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(225, 90), ImVec2(225, 90));
+    if (ImGui::BeginPopupModal("Remove All Friends", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      float btn_width = (ImGui::GetContentRegionAvail().x * 0.5f) -
+                        (ImGui::GetStyle().ItemSpacing.x * 0.5f);
+      ImVec2 btn_size = ImVec2(btn_width, btn_height);
+
+      const std::string desc = "Are you sure?";
+
+      ImVec2 desc_size = ImGui::CalcTextSize(desc.c_str());
+
+      ImGui::SetCursorPosX((ImGui::GetWindowWidth() - desc_size.x) * 0.5f);
+      ImGui::Text(desc.c_str());
+      ImGui::Separator();
+
+      if (ImGui::Button("Yes", btn_size)) {
+        kernel_state()->friends_manager()->ClearFriends(profile->xuid());
+
+        kernel_state()
+            ->emulator()
+            ->display_window()
+            ->app_context()
+            .CallInUIThread([&]() {
+              new xe::ui::HostNotificationWindow(
+                  imgui_drawer, "Removed All Friends", "Success", 0);
+            });
+
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::SameLine();
+
+      if (ImGui::Button("Cancel", btn_size)) {
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::EndPopup();
+    }
+
+    ImGui::EndPopup();
+  }
+
+  return true;
+}
+
+bool xeDrawSessionContent(xe::ui::ImGuiDrawer* imgui_drawer,
+                          UserProfile* profile,
+                          std::unique_ptr<SessionObjectJSON>& session) {
+  const uint32_t user_index =
+      kernel_state()->xam_state()->GetUserIndexAssignedToProfileFromXUID(
+          profile->GetOnlineXUID());
+
+  const auto& title_version = kernel_state()->emulator()->title_version();
+
+  const auto& media_id = kernel_state()
+                             ->GetExecutableModule()
+                             ->xex_module()
+                             ->opt_execution_info()
+                             ->media_id;
+
+  const std::string mediaId_str = fmt::format("{:08X}", media_id.get());
+
+  bool version_mismatch = title_version != session->Version();
+  bool media_id_mismatch = mediaId_str != session->MediaID();
+
+  uint32_t num_players =
+      session->FilledPublicSlotsCount() + session->FilledPrivateSlotsCount();
+
+  ImGui::Text(fmt::format("Players: {}", num_players).c_str());
+
+  if (!session->Version().empty()) {
+    ImGui::Text(fmt::format("Version: {}", session->Version()).c_str());
+  }
+
+  if (!session->MediaID().empty()) {
+    ImGui::Text(fmt::format("Media ID: {}", session->MediaID()).c_str());
+  }
+
+  ImGui::Text(fmt::format("Open Private Slots: {}",
+                          session->OpenPrivateSlotsCount().get())
+                  .c_str());
+  ImGui::Text(fmt::format("Open Public Slots: {}",
+                          session->OpenPublicSlotsCount().get())
+                  .c_str());
+
+  ImGui::Spacing();
+  ImGui::Spacing();
+
+  const std::string join_label =
+      std::format("Join Session##{}", session->SessionID());
+
+  bool caller = MacAddress(session->MacAddress()) == GetConsoleMacAddress();
+
+  std::string version_text = "Version mismatch!";
+  std::string media_text = "Media ID mismatch!";
+
+  auto version_width_btn = (ImGui::GetContentRegionAvail().x -
+                            ImGui::CalcTextSize(version_text.c_str()).x) *
+                           0.5f;
+
+  auto media_id_width_btn = (ImGui::GetContentRegionAvail().x -
+                             ImGui::CalcTextSize(media_text.c_str()).x) *
+                            0.5f;
+
+  ImGui::SetCursorPosX(version_width_btn);
+  ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 50, 50, 255));
+  if (version_mismatch && !session->Version().empty()) {
+    ImGui::Text("Version mismatch!");
+  }
+
+  ImGui::SetCursorPosX(media_id_width_btn);
+  if (media_id_mismatch && !session->MediaID().empty()) {
+    ImGui::Text("Media ID mismatch!");
+  }
+  ImGui::PopStyleColor();
+
+  ImGui::Spacing();
+  ImGui::Spacing();
+
+  // What is player presence session is null?
+  ImGui::BeginDisabled(!session->SessionID_UInt() || caller);
+  if (ImGui::Button(join_label.c_str(),
+                    ImVec2(ImGui::GetContentRegionAvail().x, 25))) {
+    X_INVITE_INFO invite = {};
+
+    invite.xuid_invitee = profile->GetOnlineXUID();
+    invite.xuid_inviter = session->XUID_UInt();
+    invite.title_id = kernel_state()->title_id();
+    invite.from_game_invite = false;
+
+    profile->SetSelfInvite(invite);
+
+    kernel_state()->BroadcastNotification(kXNotificationLiveInviteAccepted,
+                                          user_index);
+  }
+  ImGui::EndDisabled();
+
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    if (caller) {
+      ImGui::SetTooltip("Cannot join session from the same console.");
+    } else {
+      ImGui::SetTooltip("Join gaming session");
+    }
+  }
+
+  return true;
+}
+
+bool xeDrawSessionsContent(
+    xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
+    ui::SessionsContentArgs& sessions_args,
+    std::vector<std::unique_ptr<SessionObjectJSON>>* sessions) {
+  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+
+  ImGui::SetNextWindowSizeConstraints(ImVec2(300, 150), ImVec2(300, 600));
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Sessions", &sessions_args.sessions_open,
+                             ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
+    ImGui::SetWindowFontScale(1.05f);
+
+    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      ImGui::CloseCurrentPopup();
+    }
+
+    bool in_game = kernel_state()->emulator()->title_id();
+
+    if (in_game) {
+      ImGui::Text(
+          fmt::format("{}", kernel_state()->emulator()->title_name()).c_str());
+    }
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    ImGui::Text(
+        fmt::format("Available Sessions: {}", sessions->size()).c_str());
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    ImGui::Checkbox("Hide My Sessions", &sessions_args.filter_own);
+
+    ImGui::Spacing();
+
+    if (ImGui::Button("Refresh",
+                      ImVec2(ImGui::GetContentRegionAvail().x, 25))) {
+      sessions->clear();
+      sessions_args.refresh_sessions = true;
+    }
+
+    ImGui::Separator();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    if (sessions_args.refresh_sessions || sessions_args.refresh_sessions_sync) {
+      auto run = [sessions]() {
+        *sessions = kernel_state()->GetXboxLiveAPI()->GetTitleSessions();
+      };
+
+      if (sessions_args.refresh_sessions_sync) {
+        run();
+
+        sessions_args.refresh_sessions_sync = false;
+      } else {
+        std::thread refresh_sessions_thread(run);
+        refresh_sessions_thread.detach();
+
+        sessions_args.refresh_sessions = false;
+      }
+    }
+
+    for (auto& session : *sessions) {
+      bool caller = MacAddress(session->MacAddress()) == GetConsoleMacAddress();
+      if (sessions_args.filter_own && caller) {
+        continue;
+      }
+
+      xeDrawSessionContent(imgui_drawer, profile, session);
+
+      ImGui::Separator();
+      ImGui::Spacing();
+      ImGui::Spacing();
+    }
+
+    ImGui::EndPopup();
+  }
+
+  return true;
+}
+
+bool xeDrawMyDeletedProfiles(
+    xe::ui::ImGuiDrawer* imgui_drawer, ui::MyDeletedProfilesArgs& args,
+    std::map<uint64_t, std::string>* deleted_profiles) {
+  if (!deleted_profiles) {
+    return false;
+  }
+
+  ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImVec2 center = viewport->GetCenter();
+
+  float btn_height = 25;
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSizeConstraints(ImVec2(250, 115), ImVec2(250, 415));
+  if (ImGui::BeginPopupModal("Deleted Profiles", &args.deleted_profiles_open,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      ImGui::CloseCurrentPopup();
+    }
+
+    float btn_width = (ImGui::GetContentRegionAvail().x * 0.5f) -
+                      (ImGui::GetStyle().ItemSpacing.x * 0.5f);
+    ImVec2 btn_size = ImVec2(btn_width, btn_height);
+
+    const std::string desc =
+        fmt::format("Deleted Profiles: {}", deleted_profiles->size());
+
+    ImVec2 desc_size = ImGui::CalcTextSize(desc.c_str());
+
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - desc_size.x) * 0.5f);
+    ImGui::Text(desc.c_str());
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    for (const auto& [xuid, gamertag] : *deleted_profiles) {
+      ImGui::Spacing();
+      ImGui::Spacing();
+
+      std::string xuid_str = fmt::format("XUID: {:016X}", xuid);
+      std::string gamertag_str = fmt::format("Gamertag: {}", gamertag);
+
+      ImGui::Text(xuid_str.c_str());
+      ImGui::Text(gamertag_str.c_str());
+
+      ImGui::Separator();
+    }
+
+    ImGui::EndPopup();
+  }
+
+  return true;
+}
+
+void xeDrawUPnPAndPorts(xe::ui::ImGuiDrawer* imgui_drawer,
+                        ui::UPnPAndPortsArgs& args, UPnP* upnp) {
+  ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImVec2 center = viewport->GetCenter();
+
+  float btn_height_padding = ImGui::GetStyle().FramePadding.x * 2.5f;
+  float btn_width_padding = ImGui::GetStyle().FramePadding.x * 5.0f;
+
+  auto centre_text = [](std::string text) {
+    ImVec2 text_size = ImGui::CalcTextSize(text.c_str());
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - text_size.x) * 0.5f);
+    ImGui::Text(text.c_str());
+    ImGui::Separator();
+  };
+
+  if (args.first_draw) {
+    args.first_draw = false;
+
+    if (cvars::upnp && upnp) {
+      upnp->Start();
+    }
+  }
+
+  float btn_height = 25;
+  ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSizeConstraints(ImVec2(500, 0), ImVec2(500, 500));
+  if (ImGui::BeginPopupModal("UPnP and Ports", &args.dialog_open,
+                             ImGuiWindowFlags_AlwaysAutoResize |
+                                 ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoMove)) {
+    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      ImGui::CloseCurrentPopup();
+    }
+
+    std::string lbl_toggle_upnp = cvars::upnp ? "Disable UPnP" : "Enable UPnP";
+    ImVec2 toggle_upnp_lbl_size = ImGui::CalcTextSize(lbl_toggle_upnp.c_str());
+    ImVec2 toggle_upnp_btn_size =
+        ImVec2(toggle_upnp_lbl_size.x + btn_width_padding,
+               toggle_upnp_lbl_size.y + btn_height_padding);
+
+    if (ImGui::Button(lbl_toggle_upnp.c_str(), toggle_upnp_btn_size)) {
+      const bool upnp_state = !cvars::upnp;
+
+      UPnP::SetUPnPState(upnp_state);
+
+      if (upnp) {
+        if (upnp_state) {
+          if (!upnp->IsActive()) {
+            upnp->Start();
+          }
+
+          upnp->OpenTrackedPorts();
+        } else {
+          upnp->CloseOpenPorts();
+        }
+      }
+    }
+
+    if (cvars::upnp && upnp && upnp->IsActive() &&
+        kernel_state()->emulator()->is_title_open()) {
+      std::string lbl_refresh_ports = "Refresh Ports";
+      ImVec2 refresh_ports_lbl_size =
+          ImGui::CalcTextSize(lbl_refresh_ports.c_str());
+      ImVec2 refresh_upnp_btn_size =
+          ImVec2(refresh_ports_lbl_size.x + btn_width_padding,
+                 refresh_ports_lbl_size.y + btn_height_padding);
+
+      ImGui::SameLine();
+
+      ImGui::BeginDisabled(upnp->GetOpenedPorts().empty());
+      if (ImGui::Button("Refresh Ports", refresh_upnp_btn_size)) {
+        upnp->RefreshPorts();
+      }
+      ImGui::EndDisabled();
+    }
+
+    ImGui::SameLine();
+
+    std::string lbl_wiki_desc = "UPnP & Port Forwarding";
+    ImVec2 wiki_desc_size = ImGui::CalcTextSize(lbl_wiki_desc.c_str());
+
+    const float pos_x = ImGui::GetCursorPosX();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                         ImGui::GetContentRegionAvail().x - wiki_desc_size.x);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() -
+                         ImGui::GetStyle().ItemSpacing.y);
+    ImGui::TextLinkOpenURL(lbl_wiki_desc.c_str(),
+                           "https://github.com/AdrianCassar/xenia-canary/"
+                           "wiki/UPnP-&-Port-Forwarding");
+    ImGui::SetCursorPosX(pos_x);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    if (!upnp) {
+      centre_text("UPnP failed to initialize!");
+      ImGui::EndPopup();
+      return;
+    }
+
+    if (cvars::upnp) {
+      if (upnp->IsActive()) {
+        ImGui::Text("UPnP device found!");
+        ImGui::Spacing();
+      } else {
+        ImGui::Text(
+            "No UPnP devices discovered! Please check UPnP is supported or "
+            "enabled on your router.");
+        ImGui::Spacing();
+      }
+    }
+
+    if (!kernel_state()->emulator()->is_title_open()) {
+      centre_text("Game is not running!");
+      ImGui::EndPopup();
+      return;
+    }
+
+    if (kernel_state()->emulator()->is_title_open()) {
+      if (!cvars::upnp || !upnp->IsActive()) {
+        if (!upnp->GetTrackedPorts().empty()) {
+          ImGui::Text("Tracked Ports:");
+          ImGui::Spacing();
+
+          auto& tracked_ports = upnp->GetTrackedPorts();
+
+          if (ImGui::BeginTable("##PortsTable", 2,
+                                ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_Borders)) {
+            ImGui::TableSetupColumn("Protocol");
+            ImGui::TableSetupColumn("Port");
+
+            ImGui::TableHeadersRow();
+
+            for (const auto& [protocol, internal_ports] : tracked_ports) {
+              for (const auto& internal_port : internal_ports) {
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::Text(protocol.c_str());
+
+                ImGui::TableNextColumn();
+                ImGui::Text(fmt::format("{}", internal_port).c_str());
+              }
+            }
+            ImGui::EndTable();
+          }
+        } else {
+          centre_text("No ports are tracked!");
+        }
+      } else if (upnp->IsActive()) {
+        if (!upnp->GetTrackedPorts().empty()) {
+          auto& tracked_ports = upnp->GetTrackedPorts();
+
+          ImGui::Spacing();
+
+          if (upnp->IsVariableLeaseSupported()) {
+            ImGui::TextWrapped(
+                "Your router supports variable UPnP lease times. UPnP ports "
+                "have "
+                "a lease time of 1 hour, every 45 minutes UPnP will reset the "
+                "lease time to 1 hour.");
+          } else {
+            ImGui::TextWrapped(
+                "Your router only supports permanent lease times.");
+          }
+
+          ImGui::Spacing();
+
+          ImGui::TextWrapped("All ports are closed upon exit.");
+
+          ImGui::Spacing();
+          ImGui::Spacing();
+
+          if (ImGui::BeginTable("##PortsTable", 5,
+                                ImGuiTableFlags_SizingStretchProp |
+                                    ImGuiTableFlags_Borders)) {
+            ImGui::TableSetupColumn("Protocol");
+            ImGui::TableSetupColumn("Port");
+            ImGui::TableSetupColumn("Error Code");
+            ImGui::TableSetupColumn("Status");
+            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed,
+                                    150.0f);
+
+            ImGui::TableHeadersRow();
+
+            auto& port_results = upnp->GetPortBindingResults();
+            const auto opened_ports = upnp->GetOpenedPorts();
+
+            for (const auto& [protocol, internal_ports] : tracked_ports) {
+              for (const auto& internal_port : internal_ports) {
+                bool is_port_open = false;
+
+                if (opened_ports.contains(protocol)) {
+                  if (opened_ports.at(protocol).contains(internal_port)) {
+                    is_port_open = true;
+                  }
+                }
+
+                int32_t error_code = -1;
+
+                if (port_results.contains(protocol)) {
+                  if (port_results.at(protocol).contains(internal_port)) {
+                    error_code = port_results.at(protocol).at(internal_port);
+                  }
+                }
+
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::Text(protocol.c_str());
+
+                ImGui::TableNextColumn();
+                ImGui::Text(fmt::format("{}", internal_port).c_str());
+
+                ImGui::TableNextColumn();
+                ImGui::Text(fmt::format("{}", error_code).c_str());
+
+                ImGui::TableNextColumn();
+                std::string error_status;
+
+                if (!is_port_open && error_code == -1) {
+                  error_status = "Port Closed";
+                } else {
+                  if (error_code < 0) {
+                    error_status =
+                        UPnP::GetMiniUPnPcErrorCodeToDesc(error_code);
+                  } else {
+                    error_status = UPnP::GetUPnPErrorCodeToDesc(error_code);
+                  }
+                }
+
+                ImGui::TextWrapped(error_status.c_str());
+
+                ImGui::TableNextColumn();
+
+                float width = (ImGui::GetContentRegionAvail().x -
+                               ImGui::GetStyle().ItemSpacing.x) /
+                              2.0f;
+
+                std::string lbl_open_port = "Open";
+                ImVec2 open_port_lbl_size =
+                    ImGui::CalcTextSize(lbl_open_port.c_str());
+                ImVec2 open_ports_btn_size =
+                    ImVec2(width, open_port_lbl_size.y + btn_height_padding);
+
+                std::string open_lbl = fmt::format("{}## {}({})", lbl_open_port,
+                                                   internal_port, protocol);
+
+                ImGui::BeginDisabled(is_port_open);
+                if (ImGui::Button(open_lbl.c_str(), open_ports_btn_size)) {
+                  upnp->AddPort(upnp->GetLocalIP(), internal_port, protocol);
+                }
+                ImGui::EndDisabled();
+
+                ImGui::SameLine();
+
+                std::string lbl_close_port = "Close";
+                ImVec2 close_port_lbl_size =
+                    ImGui::CalcTextSize(lbl_close_port.c_str());
+                ImVec2 close_port_btn_size =
+                    ImVec2(width, close_port_lbl_size.y + btn_height_padding);
+
+                std::string lbl_close = fmt::format(
+                    "{}## {}({})", lbl_close_port, internal_port, protocol);
+
+                ImGui::BeginDisabled(!is_port_open);
+                if (ImGui::Button(lbl_close.c_str(), close_port_btn_size)) {
+                  upnp->RemovePort(internal_port, protocol);
+                }
+                ImGui::EndDisabled();
+              }
+            }
+            ImGui::EndTable();
+          }
+        } else {
+          centre_text("No ports have opened!");
+        }
+      }
+    }
+
+    ImGui::EndPopup();
+  }
 }
 
 X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
@@ -983,7 +2150,7 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
   return xeXamDispatchDialogAsync<ui::SigninUI>(
       new ui::SigninUI(
           imgui_drawer, kernel_state()->xam_state()->profile_manager(),
-          emulator->input_system()->GetLastUsedSlot(), users_needed),
+          emulator->input_system()->GetLastUsedSlot(), users_needed, flags),
       close);
 }
 
@@ -1115,6 +2282,128 @@ dword_result_t XamShowEditProfileUI_entry(dword_t user_index) {
       close);
 }
 DECLARE_XAM_EXPORT1(XamShowEditProfileUI, kUserProfiles, kImplemented);
+
+static std::atomic<bool> gamercard_open = false;
+
+dword_result_t XamShowGamerCardUIForXUID_entry(dword_t user_index,
+                                               qword_t xuid_player) {
+  uint64_t xuid = xuid_player;
+
+  // Prevent 584111F7 from opening gamercard multiple times.
+  if (gamercard_open) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (user_index >= XUserMaxUserCount) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (IsGuestXUID(xuid)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!user) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (!xuid) {
+    xuid = user->xuid();
+  }
+
+  if (!IsValidXUID(xuid)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (IsOnlineXUID(xuid) &&
+      !kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+
+  if (xuid || xuid == user->xuid() || xuid == user->GetOnlineXUID()) {
+    auto close = [](ui::GamercardFromXUIDUI* dialog) -> void {
+      gamercard_open = false;
+    };
+
+    const Emulator* emulator = kernel_state()->emulator();
+    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+    gamercard_open = true;
+
+    return xeXamDispatchDialogAsync<ui::GamercardFromXUIDUI>(
+        new ui::GamercardFromXUIDUI(imgui_drawer, xuid, user), close);
+  }
+
+  return X_ERROR_INVALID_PARAMETER;
+}
+DECLARE_XAM_EXPORT1(XamShowGamerCardUIForXUID, kUserProfiles, kStub);
+
+dword_result_t XamShowFriendsUI_entry(dword_t user_index) {
+  if (user_index >= XUserMaxUserCount && user_index != XUserIndexAny) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  UserProfile* user = nullptr;
+
+  if (user_index == XUserIndexAny) {
+    if (kernel_state()
+            ->xam_state()
+            ->profile_manager()
+            ->IsAnyProfileSignedIn()) {
+      user =
+          kernel_state()->xam_state()->GetUserProfile(static_cast<uint32_t>(0));
+    }
+  } else {
+    user = kernel_state()->xam_state()->GetUserProfile(user_index);
+  }
+
+  if (!user) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  const Emulator* emulator = kernel_state()->emulator();
+  xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+  auto close = [](ui::FriendsUI* dialog) -> void {};
+
+  return xeXamDispatchDialogAsync<ui::FriendsUI>(
+      new ui::FriendsUI(imgui_drawer, user), close);
+}
+DECLARE_XAM_EXPORT1(XamShowFriendsUI, kUserProfiles, kImplemented);
+
+dword_result_t XamShowCommunitySessionsUI_entry(dword_t user_index,
+                                                dword_t social_sessions_flags) {
+  if (user_index >= XUserMaxUserCount && user_index != XUserIndexAny) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  UserProfile* user = nullptr;
+
+  if (user_index == XUserIndexAny) {
+    if (kernel_state()
+            ->xam_state()
+            ->profile_manager()
+            ->IsAnyProfileSignedIn()) {
+      user =
+          kernel_state()->xam_state()->GetUserProfile(static_cast<uint32_t>(0));
+    }
+  } else {
+    user = kernel_state()->xam_state()->GetUserProfile(user_index);
+  }
+
+  if (!user) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  const Emulator* emulator = kernel_state()->emulator();
+  xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+  auto close = [](ui::ShowCommunitySessionsUI* dialog) -> void {};
+
+  return xeXamDispatchDialogAsync<ui::ShowCommunitySessionsUI>(
+      new ui::ShowCommunitySessionsUI(imgui_drawer, user), close);
+}
+DECLARE_XAM_EXPORT1(XamShowCommunitySessionsUI, kUserProfiles, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel

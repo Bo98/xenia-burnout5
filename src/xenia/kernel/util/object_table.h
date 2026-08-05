@@ -121,7 +121,7 @@ class ObjectTable {
     }
 
     void Reset() {
-      // Clear the object's handles first so its destructor doesn't assert on a
+      // Clear the objects' handles first so destructors don't assert on a
       // non-empty handles_.
       for (auto& [_, entry] : table_) {
         if (entry.object) {

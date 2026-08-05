@@ -565,6 +565,7 @@ void ImGuiDrawer::SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer) {
     GetIO().Fonts->TexID = reinterpret_cast<ImTextureID>(nullptr);
     font_texture_.reset();
     locked_achievement_icon_.reset();
+    loading_tile_icon_.reset();
     notification_icon_textures_.clear();
   }
   immediate_drawer_ = new_immediate_drawer;
@@ -579,6 +580,16 @@ void ImGuiDrawer::SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer) {
                                        locked_achievement_icon.second, &width,
                                        &height, &channels, STBI_rgb_alpha);
     locked_achievement_icon_ = immediate_drawer_->CreateTexture(
+        width, height, ImmediateTextureFilter::kLinear, true,
+        reinterpret_cast<uint8_t*>(image_data));
+
+    stbi_image_free(image_data);
+
+    // Load loading tile icon.
+    image_data =
+        stbi_load_from_memory(loading_tile_icon.first, loading_tile_icon.second,
+                              &width, &height, &channels, STBI_rgb_alpha);
+    loading_tile_icon_ = immediate_drawer_->CreateTexture(
         width, height, ImmediateTextureFilter::kLinear, true,
         reinterpret_cast<uint8_t*>(image_data));
 

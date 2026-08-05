@@ -14,20 +14,31 @@
 #include <string>
 #include <thread>
 
+#include "third_party/fmt/include/fmt/format.h"
+
+// clang-format off
+// We want to include platform.h first to define NOMINMAX to prevent window.h
+// from defining the macros.
+#include "xenia/base/platform.h"
+#include "third_party/libcurl/include/curl/curl.h"
+// clang-format on
+
 #include "xenia/app/discord/discord_presence.h"
 #include "xenia/app/emulator_window.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
-#include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
 #include "xenia/debug/ui/debug_window.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/util/net_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/ui/file_picker.h"
+#include "xenia/ui/imgui_host_notification.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/window_listener.h"
 #include "xenia/ui/windowed_app.h"
@@ -128,10 +139,14 @@ DEFINE_transient_bool(portable, true,
 
 DECLARE_bool(debug);
 
-DEFINE_bool(discord, true, "Enable Discord rich presence", "General");
+DECLARE_bool(discord);
+
+DECLARE_int32(discord_presence_user_index);
 
 DECLARE_int32(window_size_x);
 DECLARE_int32(window_size_y);
+
+DECLARE_bool(upnp);
 
 namespace xe {
 namespace app {
@@ -535,6 +550,13 @@ bool EmulatorApp::OnInitialize() {
     discord::DiscordPresence::NotPlaying();
   }
 
+  // Initialize Curl
+  CURLcode status = curl_global_init(CURL_GLOBAL_DEFAULT);
+  if (status != CURLE_OK) {
+    XELOGE("Cannot initialize CURL! Error code: {}",
+           static_cast<uint32_t>(status));
+  }
+
   // Create the emulator but don't initialize so we can setup the window.
   emulator_ =
       std::make_unique<Emulator>("", storage_root, content_root, cache_root);
@@ -567,6 +589,22 @@ void EmulatorApp::OnDestroy() {
   Profiler::Dump();
   // The profiler needs to shut down before the graphics context.
   Profiler::Shutdown();
+
+  // TODO(Adrian): Close all dialogs in use by emulator window.
+  emulator_window_->ShutdownUpdaterDialog();
+
+#pragma region NetplayCleanup
+  emulator_->ShutdownUPnP();
+
+  // Delete sessions on shutdown.
+  emulator_->GetXboxLiveAPI()->DeleteAllSessionsByMac();
+
+  emulator_->GetXboxLiveAPI()->~XLiveAPI();
+
+  // Causes crash if multiplexing connections haven't finished.
+  // XLiveAPI should destroy the multiplexing handles before cleanup.
+  // curl_global_cleanup();
+#pragma endregion
 
   // Write all cvar overrides to the config.
   config::SaveConfig();
@@ -655,6 +693,20 @@ void EmulatorApp::EmulatorThread() {
         fs->RegisterSymbolicLink("cache:", "\\CACHE");
       }
     }
+
+    auto xstorage_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\XSTORAGE", emulator_->storage_root() / "xstorage", false);
+    if (!xstorage_device->Initialize()) {
+      XELOGE("Unable to scan xstorage path");
+    } else {
+      if (!emulator_->file_system()->RegisterDevice(
+              std::move(xstorage_device))) {
+        XELOGE("Unable to register xstorage path");
+      } else {
+        emulator_->file_system()->RegisterSymbolicLink("xstorage:",
+                                                       "\\XSTORAGE");
+      }
+    }
   }
 
   if (cvars::force_mount_devkit) {
@@ -708,13 +760,58 @@ void EmulatorApp::EmulatorThread() {
   }
 
   emulator_->on_launch.AddListener([&](auto title_id, const auto& game_title) {
-    if (cvars::discord) {
-      discord::DiscordPresence::PlayingTitle(
-          game_title.empty() ? "Unknown Title" : std::string(game_title));
-    }
+    discord::DiscordPresence::PlayingTitle(
+        game_title.empty() ? "Unknown Title" : std::string(game_title),
+        "In Game");
+
     app_context().CallInUIThread([this]() { emulator_window_->UpdateTitle(); });
     emulator_thread_event_->Set();
   });
+
+  emulator_->on_presence_change.AddListener([&](const auto& game_title,
+                                                const auto& presence_string) {
+    const std::string title =
+        game_title.empty() ? "Unknown Title" : std::string(game_title);
+
+    discord::DiscordPresence::PlayingTitle(title, xe::to_utf8(presence_string));
+  });
+
+  emulator_->on_session_change.AddListener(
+      [this](const xe::kernel::XSESSION_INFO* session_info, uint32_t party_size,
+             uint32_t party_max, uint64_t host_xuid) {
+        discord::DiscordPresence::UpdateSession(emulator_->title_id(),
+                                                session_info, party_size,
+                                                party_max, host_xuid);
+      });
+
+  discord::DiscordPresence::SetJoinRequestHandler(
+      [this](xe::kernel::X_INVITE_INFO invite) {
+        const auto show_notification = [this](const std::string& title) {
+          app_context().CallInUIThread([this, title]() {
+            new xe::ui::HostNotificationWindow(
+                emulator_->imgui_drawer(), "Join Failed!", title.c_str(), 0);
+          });
+        };
+
+        if (invite.title_id != emulator_->title_id()) {
+          show_notification("User is playing a different game.");
+          return;
+        }
+
+        const uint32_t user_index = cvars::discord_presence_user_index;
+        kernel::xam::UserProfile* profile =
+            emulator_->kernel_state()->xam_state()->GetUserProfile(user_index);
+
+        if (!profile) {
+          show_notification("User not logged in.");
+          return;
+        }
+
+        invite.xuid_invitee = profile->GetOnlineXUID();
+        profile->SetSelfInvite(invite);
+        emulator_->kernel_state()->BroadcastNotification(
+            kXNotificationLiveInviteAccepted, user_index);
+      });
 
   emulator_->on_shader_storage_initialization.AddListener(
       [this](bool initializing) {
@@ -736,6 +833,14 @@ void EmulatorApp::EmulatorThread() {
   // Enable emulator input now that the emulator is properly loaded.
   app_context().CallInUIThread(
       [this]() { emulator_window_->OnEmulatorInitialized(); });
+
+  if (cvar::updated_arg_present) {
+    if (cvar::updated) {
+      emulator_window_->UpdateCompletionNotification();
+    } else {
+      emulator_window_->ToggleCompletionDialog();
+    }
+  }
 
   // Grab path from the flag or unnamed argument.
   std::filesystem::path path;

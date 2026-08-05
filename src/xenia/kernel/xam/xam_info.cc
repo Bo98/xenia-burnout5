@@ -70,30 +70,211 @@ DECLARE_XAM_EXPORT1(XamFeatureEnabled, kNone, kImplemented);
 dword_result_t XamGetStagingMode_entry() { return cvars::staging_mode; }
 DECLARE_XAM_EXPORT1(XamGetStagingMode, kNone, kStub);
 
-// Empty stub schema binary.
-uint8_t schema_bin[] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00,
-    0x00, 0x2C, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x2C, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18,
-};
-
 dword_result_t XamGetOnlineSchema_entry() {
-  static uint32_t schema_guest = 0;
-
-  if (!schema_guest) {
-    schema_guest =
-        kernel_state()->memory()->SystemHeapAlloc(8 + sizeof(schema_bin));
-    auto schema = kernel_state()->memory()->TranslateVirtual(schema_guest);
-    std::memcpy(schema + 8, schema_bin, sizeof(schema_bin));
-    xe::store_and_swap<uint32_t>(schema + 0, schema_guest + 8);
-    xe::store_and_swap<uint32_t>(schema + 4, sizeof(schema_bin));
-  }
-
-  // return pointer to the schema ptr/schema size struct
-  return schema_guest;
+  return kernel_state()->xam_state()->GetOnlineSchemaAddress();
 }
 DECLARE_XAM_EXPORT1(XamGetOnlineSchema, kNone, kImplemented);
+
+dword_result_t XamQueryLiveHiveA_entry(
+    lpstring_t feature_name, lpstring_t value_ptr, dword_t value_buffer_size,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!feature_name || !value_ptr || !value_buffer_size) {
+    return X_E_INVALIDARG;
+  }
+
+  auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
+
+    std::memset(value_ptr, 0, value_buffer_size);
+
+    std::string value = "";
+
+    if (feature_name.value() == "SearchKillSwitch") {
+      value = "";
+    } else if (feature_name.value() == "SearchOnlineRecUnavailableLocales") {
+      // value = "fr-ch,de-ch";
+    } else if (feature_name.value() == "SearchUnavailableLocales") {
+      value = "";
+    } else if (feature_name.value() == "SearchSpeechURL") {
+      value = "https://ssl.bing.com/speechreco/xbox/query";
+    } else if (feature_name.value() == "DisplayCurrencyBalanceOnDash") {
+      value = "1";
+    } else if (feature_name.value() == "TFAEnabled") {
+      value = "1";
+    } else if (feature_name.value() == "CatalogUriRoot") {
+      value = "http://catalog.xboxlive.com";
+    } else if (feature_name.value() == "CatalogCDNUriRoot") {
+      value = "http://catalog-cdn.xboxlive.com";
+    } else if (feature_name.value() == "CatalogCDNUriPort") {
+      value = "80";
+    } else if (feature_name.value() == "NielsenSoundEnabled") {
+      value = "1";
+    } else {
+      assert_always();
+      XELOGI("Unknown Feature: {}", feature_name.value());
+    }
+
+    xe::string_util::copy_truncating(value_ptr, value, value_buffer_size);
+
+    return X_ERROR_SUCCESS;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? result : extended_error;
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamQueryLiveHiveA, kMisc, kStub);
+
+dword_result_t XamGetLiveHiveValueA_entry(
+    lpstring_t feature_name, lpstring_t value_ptr, dword_t value_buffer_size,
+    dword_t unk, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!feature_name || !value_ptr || !value_buffer_size) {
+    return X_E_INVALIDARG;
+  }
+
+  auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
+
+    std::memset(value_ptr, 0, value_buffer_size);
+
+    std::string data;
+
+    if (feature_name.value() == "AvatarPhotoBoothEnabled") {
+      data = "1";
+    } else if (feature_name.value() == "AvatarMarketplaceEnabled") {
+      data = "0";
+    } else if (feature_name.value() == "AvatarAssetRefreshFrequency") {
+      data = "100";
+    } else if (feature_name.value() == "CompanionBlacklist") {
+      // 58411457
+      // List?
+    } else if (feature_name.value() == "UseDashGamertagChangeApp") {
+      data = "1";
+    } else if (feature_name.value() == "SysExtRevocationList") {
+      data = "00D8B517FD2E27C62C866B041492CCD391085C3B";
+    } else {
+      assert_always();
+      XELOGI("Unknown Feature: {}", feature_name.value());
+    }
+
+    xe::string_util::copy_truncating(value_ptr, data, value_buffer_size);
+
+    return X_ERROR_SUCCESS;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? result : extended_error;
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamGetLiveHiveValueA, kMisc, kStub);
+
+dword_result_t XamGetLiveHiveValueW_entry(
+    lpu16string_t feature_name, lpu16string_t value_ptr,
+    dword_t value_buffer_size, dword_t unk,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!feature_name || !value_ptr || !value_buffer_size) {
+    return X_E_INVALIDARG;
+  }
+
+  auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
+
+    std::memset(value_ptr, 0, value_buffer_size);
+
+    const std::u16string native_feature_name =
+        xe::string_util::read_u16string_and_swap(feature_name);
+
+    std::u16string data;
+
+    if (native_feature_name == u"GameImageAssetUriRoot") {
+      data = u"http://tiles.xbox.com/consoleAssets";
+    } else if (native_feature_name == u"EpixReportingEnabled") {
+      data = u"1";
+    } else if (native_feature_name == u"EpixFailSafeEnabled") {
+      data = u"0";
+    } else if (native_feature_name == u"EpixShallowEnabled") {
+      data = u"0";
+    } else if (native_feature_name == u"EpixPollFrequencyInMinutes") {
+      data = u"240";
+    } else if (native_feature_name == u"EpixManifestUriPath") {
+      data = u"/epix/$locale/";
+    } else if (native_feature_name == u"EpixPreviewUriRoot") {
+      data = u"http://epix-preview.xbox.com";
+    } else if (native_feature_name == u"EpixUriRoot") {
+      data = u"http://epix.xbox.com";
+    } else if (native_feature_name == u"EpixAvatarConfigPath") {
+      data = u"/consoleassets/vm_ems/avatarbitmask.txt";
+    } else if (native_feature_name == u"XSignerMinimumVersion") {
+      data = u"0";
+    } else if (native_feature_name == u"MarketplaceLibraryEnabled") {
+      data = u"1";
+    } else {
+      assert_always();
+      XELOGI("Unknown Feature: {}", xe::to_utf8(native_feature_name));
+    }
+
+    xe::string_util::copy_and_swap_truncating(value_ptr, data,
+                                              value_buffer_size);
+
+    return X_ERROR_SUCCESS;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+
+    return result == X_ERROR_SUCCESS ? result : extended_error;
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamGetLiveHiveValueW, kMisc, kStub);
+
+dword_result_t XamGetErrorStringFromWebService_entry(
+    dword_t status_code_desc_address, dword_t buffer_size, dword_t status_code,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!status_code_desc_address || !buffer_size || !status_code) {
+    return X_E_INVALIDARG;
+  }
+
+  char16_t* status_code_desc_ptr =
+      kernel_state()->memory()->TranslateVirtual<char16_t*>(
+          status_code_desc_address);
+
+  auto run = [=](uint32_t& length, uint32_t& extended_error) -> X_RESULT {
+    length = 0;
+    extended_error = X_E_SUCCESS;
+
+    std::memset(status_code_desc_ptr, 0, buffer_size);
+
+    return X_E_SUCCESS;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t length, extended_error;
+    return run(length, extended_error);
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamGetErrorStringFromWebService, kMisc, kStub);
 
 dword_result_t keXamBuildResourceLocator(uint64_t module,
                                          const std::u16string& container,
@@ -204,13 +385,71 @@ dword_result_t XamXStudioRequest_entry(dword_t unk1, lpdword_t unk2) {
 }
 DECLARE_XAM_EXPORT1(XamXStudioRequest, kNone, kStub);
 
+dword_result_t XamReadString_entry(dword_t title_id, qword_t id,
+                                   dword_t user_index, dword_t string_out_ptr,
+                                   lpdword_t string_size_ptr,
+                                   pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!string_out_ptr || id == 0xFFFF) {
+    return X_E_INVALIDARG;
+  }
+
+  if (!string_size_ptr) {
+    return X_E_INSUFFICIENT_BUFFER;
+  }
+
+  auto run = [=](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+    X_STATUS result = X_ERROR_SUCCESS;
+
+    // 584111F7 reads leaderboard strings
+    const std::u16string localized_string = xe::to_utf16(
+        kernel_state()->emulator()->game_info_database()->GetLocalizedString(
+            static_cast<uint32_t>(id)));
+
+    const size_t str_buffer_size = *string_size_ptr;
+
+    char16_t* str_buffer =
+        kernel_memory()->TranslateVirtual<char16_t*>(string_out_ptr);
+
+    xe::string_util::copy_and_swap_truncating(str_buffer, localized_string,
+                                              str_buffer_size);
+
+    extended_error = X_HRESULT_FROM_WIN32(result);
+    length = 0;
+
+    return result;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length = 0;
+    return run(extended_error, length);
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamReadString, kNone, kImplemented);
+
 dword_result_t XamGetSystemVersion_entry() {
   // eh, just picking one. If we go too low we may break new games, but
   // this value seems to be used for conditionally loading symbols and if
   // we pretend to be old we have less to worry with implementing.
-  // 0x200A3200
-  // 0x20096B00
-  return 0;
+  // 0x200A3200 = 2.0.2610.0
+  // 0x20096B00 = 2.0.2411.0
+  // 0x200CE900 = 2.0.3305.0
+  // Latest
+  // https://support.xbox.com/en-GB/help/xbox-360/console/system-update-operating-system
+  // 0x20449700 = 2.0.17559.0
+
+  auto ver = 0x20449700;
+
+  // auto version = fmt::format("Kernel version: {}.{}.{}.{}", (ver >> 28) &
+  // 0xF,
+  //                            (ver >> 24) & 0xF, (ver >> 8) & 0xFFFF, ver &
+  //                            0xF);
+
+  // XELOGD("{}", version);
+
+  return ver;
 }
 DECLARE_XAM_EXPORT1(XamGetSystemVersion, kNone, kStub);
 

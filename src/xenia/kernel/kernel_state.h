@@ -19,6 +19,7 @@
 #include "xenia/base/bit_map.h"
 #include "xenia/cpu/backend/backend.h"
 #include "xenia/cpu/export_resolver.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel.h"
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/kernel_fwd.h"
@@ -28,6 +29,7 @@
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/app_manager.h"
 #include "xenia/kernel/xam/content_manager.h"
+#include "xenia/kernel/xam/friends_manager.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
@@ -191,6 +193,8 @@ class KernelState {
 
   uint32_t title_id() const;
   bool is_title_open() const;
+  static bool is_title_system_type(uint32_t title_id);
+  XNKEY* title_lan_key() const;
   const std::unique_ptr<xam::SpaInfo> title_xdbf() const;
   const std::unique_ptr<xam::SpaInfo> module_xdbf(
       object_ref<UserModule> exec_module) const;
@@ -206,11 +210,19 @@ class KernelState {
   xam::ContentManager* content_manager() const {
     return xam_state()->content_manager();
   }
+  xam::FriendsManager* friends_manager() const {
+    return xam_state()->friends_manager();
+  }
+  xam::PresenceManager* presence_manager() const {
+    return xam_state()->presence_manager();
+  }
 
   XmpVolumePatch* xmp_volume_patch() const { return xmp_volume_patch_.get(); }
   void InitXmpVolumePatch();
 
   XConfig* xconfig() const { return xconfig_.get(); }
+
+  XLiveAPI* GetXboxLiveAPI() const;
 
   std::bitset<4> GetConnectedUsers() const;
 

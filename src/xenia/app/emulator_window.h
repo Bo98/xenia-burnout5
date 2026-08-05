@@ -13,7 +13,11 @@
 #include <memory>
 #include <string>
 
+#include "xenia/app/gamerpic_browser.h"
+#include "xenia/app/netplay_settings_dialog.h"
 #include "xenia/app/profile_dialogs.h"
+#include "xenia/app/updater.h"
+#include "xenia/app/updater_dialog.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -54,6 +58,8 @@ class EmulatorWindow {
 
   virtual ~EmulatorWindow();
 
+  void ShutdownUpdaterDialog();
+
   static std::unique_ptr<EmulatorWindow> Create(
       Emulator* emulator, ui::WindowedAppContext& app_context, uint32_t width,
       uint32_t height);
@@ -76,6 +82,9 @@ class EmulatorWindow {
   ui::WindowedAppContext& app_context() const { return app_context_; }
   ui::Window* window() const { return window_.get(); }
   ui::ImGuiDrawer* imgui_drawer() const { return imgui_drawer_.get(); }
+  std::shared_ptr<ui::ImGuiDrawer> imgui_drawer_shared() const {
+    return imgui_drawer_;
+  }
 
   ui::Presenter* GetGraphicsSystemPresenter() const;
   void SetupGraphicsSystemPresenterPainting();
@@ -87,6 +96,7 @@ class EmulatorWindow {
   void UpdateTitle();
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
+  void SetAutoCheckForUpdates(const bool state);
   void SetInitializingShaderStorage(bool initializing);
 
   void TakeScreenshot();
@@ -94,9 +104,17 @@ class EmulatorWindow {
   void SaveImage(const std::filesystem::path& path,
                  const xe::ui::RawImage& image);
 
+  void UpdateCompletionNotification();
+
   void ToggleProfilesConfigDialog();
+  void ToggleGamerpicBrowserDialog();
   void ToggleXMPConfigDialog();
   void ToggleConsoleSettingsDialog();
+  void ToggleFriendsDialog();
+  void ToggleUpdaterDialog();
+  void ToggleCompletionDialog();
+  void ToggleNetplaySettingsDialog();
+  void ToggleNetplayStatusDialog();
 
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
 
@@ -268,6 +286,7 @@ class EmulatorWindow {
   void ExtractZarchive();
   void CreateZarchive();
   void ShowContentDirectory();
+  void DumpXLast();
   void CpuTimeScalarReset();
   void CpuTimeScalarSetHalf();
   void CpuTimeScalarSetDouble();
@@ -280,7 +299,8 @@ class EmulatorWindow {
   void ShowCompatibility();
   void ShowFAQ();
   void ShowBuildCommit();
-
+  void ShowUpdateAvailableDialog(const std::string& commit,
+                                 const std::string& date);
   EmulatorWindow::ControllerHotKey ProcessControllerHotkey(int buttons);
   void VibrateController(xe::hid::InputSystem* input_sys, uint32_t user_index,
                          bool vibrate = true);
@@ -304,7 +324,8 @@ class EmulatorWindow {
   ui::WindowedAppContext& app_context_;
   EmulatorWindowListener window_listener_;
   std::unique_ptr<ui::Window> window_;
-  std::unique_ptr<ui::ImGuiDrawer> imgui_drawer_;
+  // shared_ptr needed for gamerpic browser
+  std::shared_ptr<ui::ImGuiDrawer> imgui_drawer_;
   std::unique_ptr<DisplayConfigGameConfigLoadCallback>
       display_config_game_config_load_callback_;
   // Creation may fail, in this case immediate drawer UI must not be drawn.
@@ -316,6 +337,10 @@ class EmulatorWindow {
   std::string base_title_;
   bool initializing_shader_storage_ = false;
 
+  std::shared_ptr<Updater> updater_;
+  std::shared_future<CheckForUpdateInfo> update_info_;
+  std::atomic<bool> cancel_request;
+
   std::unique_ptr<DisplayConfigDialog> display_config_dialog_;
   std::unique_ptr<ConsoleSettingsDialog> console_settings_dialog_;
 
@@ -323,7 +348,19 @@ class EmulatorWindow {
   // messages back to guest.
   std::unique_ptr<ProfileConfigDialog> profile_config_dialog_;
 
+  std::unique_ptr<TitleGamerpicBrowser> gamerpic_browser_dialog_;
+
   std::unique_ptr<XMPConfigDialog> xmp_config_dialog_;
+
+  std::unique_ptr<ManagerDialog> friends_manager_dialog_;
+
+  std::unique_ptr<UpdaterDialog> updater_dialog_;
+
+  std::unique_ptr<UpdaterCompletionDialog> updater_completion_dialog_;
+
+  std::unique_ptr<NetplaySettingsDialog> netplay_settings_dialog_;
+
+  std::unique_ptr<NetplayStatusDialog> netplay_status_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
 };

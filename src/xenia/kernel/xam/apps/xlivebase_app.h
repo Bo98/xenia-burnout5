@@ -2,7 +2,7 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2015 Ben Vanik. All rights reserved.                             *
+ * Copyright 2026 Xenia Canary. All rights reserved.                          *
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
@@ -22,8 +22,82 @@ class XLiveBaseApp : public App {
  public:
   explicit XLiveBaseApp(KernelState* kernel_state);
 
-  X_HRESULT DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
-                                uint32_t buffer_length) override;
+  uint32_t GetDispatchMessageID(uint32_t message, uint32_t buffer_ptr,
+                                uint32_t buffer_length) const;
+
+  X_HRESULT ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
+                                   uint32_t buffer_length,
+                                   uint32_t* extended_error) override;
+
+ private:
+  X_HRESULT XPresenceInitialize(uint32_t buffer_ptr, uint32_t buffer_length);
+  X_HRESULT XPresenceSubscribe(uint32_t buffer_ptr, uint32_t buffer_length);
+  X_HRESULT XPresenceUnsubscribe(uint32_t buffer_ptr, uint32_t buffer_length);
+  X_HRESULT XPresenceCreateEnumerator(uint32_t buffer_ptr,
+                                      uint32_t buffer_length);
+  X_HRESULT XOnlineQuerySearch(uint32_t buffer_ptr);
+  X_HRESULT XOnlineGetServiceInfo(uint32_t service_id, uint32_t service_info);
+
+  X_HRESULT XFriendsCreateEnumerator(uint32_t buffer_ptr,
+                                     uint32_t buffer_length);
+  X_HRESULT XInviteSend(uint32_t buffer_ptr);
+  X_HRESULT XInviteGetAcceptedInfo(uint32_t buffer_ptr, uint32_t buffer_length);
+  X_HRESULT GenericMarshalled(uint32_t buffer_ptr);
+  X_HRESULT XUserMuteListQuery(uint32_t buffer_ptr, uint32_t buffer_length);
+  X_HRESULT XUserValidateAvatarManifest(uint32_t buffer_ptr);
+  X_HRESULT XUserMuteListAdd(uint32_t buffer_ptr);
+  X_HRESULT XUserMuteListRemove(uint32_t buffer_ptr);
+  X_HRESULT XAccountGetUserInfo(uint32_t buffer_ptr);
+  X_HRESULT XStorageEnumerate(uint32_t buffer_ptr);
+  X_HRESULT XStringVerify(uint32_t buffer_ptr);
+  X_HRESULT XUserEstimateRankForRating(uint32_t buffer_ptr);
+  X_HRESULT XStorageDelete(uint32_t buffer_ptr);
+  X_HRESULT XStorageDownloadToMemory(uint32_t buffer_ptr,
+                                     uint32_t* extended_error);
+  X_HRESULT XStorageUploadFromMemory(uint32_t buffer_ptr);
+  X_HRESULT XStorageBuildServerPath(uint32_t buffer_ptr);
+  X_HRESULT XOnlineGetTaskProgress(uint32_t buffer_ptr);
+  X_HRESULT GetNextSequenceMessage(uint32_t buffer_ptr);
+  X_HRESULT XUserFindUsers(uint32_t buffer_ptr);
+  X_HRESULT XContentGetMarketplaceCounts(uint32_t buffer_ptr);
+
+  X_HRESULT XGetBannerList(uint32_t buffer_ptr);
+  X_HRESULT XAccountGetPointsBalance(uint32_t buffer_ptr);
+  X_HRESULT XGetBannerListHot(uint32_t buffer_ptr);
+  X_HRESULT XOfferingContentEnumerate(uint32_t buffer_ptr);
+  X_HRESULT XGenresEnumerate(uint32_t buffer_ptr);
+  X_HRESULT XEnumerateTitlesByFilter(uint32_t buffer_ptr);
+  X_HRESULT XOfferingSubscriptionEnumerate(uint32_t buffer_ptr);
+
+  X_HRESULT XUpdateAccessTimes(uint32_t buffer_ptr);
+
+  X_HRESULT XMessageEnumerate(uint32_t buffer_ptr, uint32_t buffer_length);
+  X_HRESULT XPresenceGetState(uint32_t buffer_ptr, uint32_t buffer_length);
+
+  X_HRESULT XOnlineCallWebService(uint32_t buffer_ptr);
+  X_HRESULT XOnlineGetWebServiceTaskBufferSize(uint32_t buffer_ptr);
+
+  X_HRESULT XPassportGetMemberName(uint32_t buffer_ptr);
+
+  X_STORAGE_FACILITY GetStorageFacilityTypeFromGuestServerPath(
+      const std::string server_path) const;
+  std::optional<std::smatch> ParseGuestServerPath(
+      const std::string& server_path) const;
+  std::string ConvertGuestServerPathToHostServerPath(
+      const std::string server_path) const;
+  std::string ConvertGuestServerPathToHostSymlinkPath(
+      const std::string server_path) const;
+
+  X_STORAGE_FACILITY GetStorageFacilityTypeFromHostServerPath(
+      const std::string server_path) const;
+  std::optional<std::smatch> ParseHostServerPath(
+      const std::string& server_path) const;
+  std::string ConvertHostServerPathToGuestServerPath(
+      const std::string server_path) const;
+
+  const uint32_t kAsyncSchemaIndexMask = 0x50000;
+
+  static constexpr std::string_view xstorage_symboliclink = "XSTORAGE:";
 };
 
 }  // namespace apps
