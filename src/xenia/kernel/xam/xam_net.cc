@@ -1109,13 +1109,25 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
 
     while (info && address_index < std::size(dns->aina) &&
            !stop_token.stop_requested()) {
-      dns->aina[address_index] = *reinterpret_cast<in_addr*>(info->ai_addr);
-      info = addr_info->ai_next;
-      address_index++;
+      if (info->ai_family == AF_INET && info->ai_addr) {
+        // Resolving the sin_addr field instead of the start of the sockaddr
+        // seems to fix resolution in Burnout Paradise (45410806)
+        dns->aina[address_index] =
+            reinterpret_cast<sockaddr_in*>(info->ai_addr)->sin_addr;
+
+        XELOGI("DNS Lookup: {} resolved to {}", host.value(),
+               ip_to_string(dns->aina[address_index]));
+
+        address_index++;
+      }
+
+      info = info->ai_next;
     }
 
+    freeaddrinfo(addr_info);
+
     dns->cina = address_index;
-    dns->status = XSocket::GetLastWSAError();
+    dns->status = X_ERROR_SUCCESS;
 
     xboxkrnl::xeNtSetEvent(event_handle, nullptr);
   };
