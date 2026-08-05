@@ -1723,7 +1723,7 @@ void EmulatorWindow::ToggleGamerpicBrowserDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     gamerpic_browser_dialog_ =
         TitleGamerpicBrowser::Create(imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1732,7 +1732,7 @@ void EmulatorWindow::ToggleGamerpicBrowserDialog() {
     } else {
       gamerpic_browser_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -1765,7 +1765,7 @@ void EmulatorWindow::ToggleFriendsDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     friends_manager_dialog_ =
         std::make_unique<ManagerDialog>(imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1774,7 +1774,7 @@ void EmulatorWindow::ToggleFriendsDialog() {
     } else {
       friends_manager_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -1787,7 +1787,7 @@ void EmulatorWindow::ToggleUpdaterDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     updater_dialog_ = std::make_unique<UpdaterDialog>(
         updater_, auto_check_update, imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1796,7 +1796,7 @@ void EmulatorWindow::ToggleUpdaterDialog() {
     } else {
       updater_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -1806,7 +1806,7 @@ void EmulatorWindow::ToggleCompletionDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     updater_completion_dialog_ = std::make_unique<UpdaterCompletionDialog>(
         imgui_drawer_.get(), this, cvar::updated);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1815,7 +1815,7 @@ void EmulatorWindow::ToggleCompletionDialog() {
     } else {
       updater_completion_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -1825,7 +1825,7 @@ void EmulatorWindow::ToggleNetplaySettingsDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     netplay_settings_dialog_ = std::make_unique<NetplaySettingsDialog>(
         imgui_drawer_.get(), this, emulator_->GetNetworkAdapterManager());
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1834,7 +1834,7 @@ void EmulatorWindow::ToggleNetplaySettingsDialog() {
     } else {
       netplay_settings_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -1844,7 +1844,7 @@ void EmulatorWindow::ToggleNetplayStatusDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     netplay_status_dialog_ = std::make_unique<NetplayStatusDialog>(
         imgui_drawer_.get(), this, emulator_->GetNetworkAdapterManager());
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1853,7 +1853,7 @@ void EmulatorWindow::ToggleNetplayStatusDialog() {
     } else {
       netplay_status_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -2463,7 +2463,7 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
   if (gamerpic_browser_dialog_) {
     gamerpic_browser_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 
   if (display_config_dialog_) {
@@ -2472,27 +2472,27 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
   if (friends_manager_dialog_) {
     friends_manager_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 
   if (updater_dialog_) {
     updater_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 
   if (updater_completion_dialog_) {
     updater_completion_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 
   if (netplay_settings_dialog_) {
     netplay_settings_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 
   if (netplay_status_dialog_) {
     netplay_status_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 
   ClearDialogs();
